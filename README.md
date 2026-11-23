@@ -32,7 +32,7 @@ Use the search field above the conversation to search the selected server (tick 
 
 The signed `Rustcord.app` can show silent macOS notifications for incoming DMs and direct server mentions when the Rustcord window is not focused. The first eligible message asks for permission. Change permission in **System Settings → Notifications → Rustcord** (System Preferences on older macOS versions). Alerts contain no sender, channel, or message text. Discord's server and channel notification preferences do not sync to Rustcord.
 
-Notifications are unavailable with `cargo run` and on Linux. For local development, build the app bundle as described below and sign it before opening it (for example, `codesign --force --sign - dist/Rustcord.app` for ad-hoc signing on your Mac).
+Notifications are unavailable with `cargo run` and on Linux. For local development, build and open the signed app bundle as described below.
 
 ## Privacy
 
@@ -99,4 +99,24 @@ Demo scenes are locally interactive: sending appends an in-memory demo message, 
 
 Supply-chain checks (also run by `.github/workflows/supply-chain.yml` on PRs, pushes to main and weekly): `cargo audit` (config in `.cargo/audit.toml`) and `cargo deny --locked check` (config in `deny.toml`). Ignored advisories are listed with their reason in both files.
 
-On macOS, `bash scripts/bundle-macos.sh` creates `dist/Rustcord.app` (macOS 11+). The app is unsigned and not notarized; it is a development bundle, built for the runner's architecture, not a universal binary. CI uploads a zipped bundle preserving executable permissions.
+## macOS packages
+
+On macOS with Xcode Command Line Tools and rustup installed, run:
+
+```sh
+bash scripts/bundle-macos.sh
+```
+
+This builds `dist/Rustcord.app` and `dist/Rustcord-<version>-macos-<arch>.dmg` for the installed Rust toolchain's architecture, targeting macOS 11 or newer. Mount the DMG and drag Rustcord to Applications. CI builds and checks separate packages for Apple silicon (`arm64`) and Intel (`x86_64`) and uploads each DMG alongside a ZIP of the app.
+
+Local and CI packages are ad hoc signed and not notarized. They are for development and may be blocked by Gatekeeper when downloaded. For distribution, install a **Developer ID Application** certificate in your keychain and set `MACOS_SIGNING_IDENTITY` to its name when running the script. Then run the following with the resulting DMG path and a configured notarytool keychain profile:
+
+```sh
+xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+# Continue only if notarization is accepted.
+xcrun stapler staple "$DMG"
+xcrun stapler validate "$DMG"
+spctl --assess --type open --context context:primary-signature -v "$DMG"
+```
+
+Distribute the notarized DMG, not the development ZIP.
