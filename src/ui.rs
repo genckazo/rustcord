@@ -485,25 +485,36 @@ fn demo(s: &mut State) {
     s.channel = Some("102".into());
     let guild: Guild = serde_json::from_value(serde_json::json!({"id":"100","name":"Rust community","channels":[{"id":"101","type":4,"name":"Community","position":0},{"id":"102","type":0,"name":"general","parent_id":"101","position":1},{"id":"103","type":0,"name":"projects","parent_id":"101","position":2}]})).unwrap();
     s.store.guild(guild);
-    let dm: Channel = serde_json::from_value(
-        serde_json::json!({"id":"200","type":1,"recipients":[{"id":"3","username":"River"}]}),
-    )
-    .unwrap();
-    s.store.channels.insert(dm.id.clone(), dm);
-    for (i, name, content) in [
+    s.store.user = Some(User {
+        id: "1".into(),
+        username: "you".into(),
+        global_name: Some("You".into()),
+    });
+    for dm in [
+        serde_json::json!({"id":"200","type":1,"last_message_id":"50","recipients":[{"id":"3","username":"River"}]}),
+        serde_json::json!({"id":"201","type":1,"last_message_id":"80","recipients":[{"id":"4","username":"Kai"}]}),
+        serde_json::json!({"id":"202","type":3,"last_message_id":"60","recipients":[{"id":"2","username":"Ada"},{"id":"3","username":"River"}]}),
+    ] {
+        let dm: Channel = serde_json::from_value(dm).unwrap();
+        s.store.channels.insert(dm.id.clone(), dm);
+    }
+    for (i, author, name, content) in [
         (
             1,
+            "2",
             "Ada",
             "Welcome to Rustcord. A little less noise, a little more conversation.",
         ),
         (
             2,
+            "3",
             "River",
             "Text chat is here. Messages stay in memory, not on disk.",
         ),
         (
             3,
-            "Ada",
+            "1",
+            "You",
             "The gateway and REST client run off the UI thread. Voice can join later.",
         ),
     ] {
@@ -511,7 +522,7 @@ fn demo(s: &mut State) {
             id: i.to_string(),
             channel_id: "102".into(),
             author: User {
-                id: i.to_string(),
+                id: author.into(),
                 username: name.into(),
                 global_name: None,
             },
