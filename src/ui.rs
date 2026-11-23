@@ -16,7 +16,7 @@ use crate::{
 use rune::{
     col, el, row, text, text_input,
     tok::{self, type_},
-    AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, Waker,
+    AppSpec, Cx, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, Waker,
 };
 use std::{
     cell::Cell,
@@ -258,6 +258,13 @@ impl State {
     fn close_search(&mut self) {
         self.search = None;
         self.search_error = None;
+    }
+    fn escape_key(&mut self, key: &Key) -> bool {
+        if *key == Key::Escape && self.search.is_some() {
+            self.close_search();
+            return true;
+        }
+        false
     }
     fn reset_search(&mut self) {
         self.close_search();
@@ -785,6 +792,9 @@ fn chat(s: &State) -> El {
                         .placeholder("Write a message…", t.text_secondary)
                         .on_edit(|s: &mut State| &mut s.draft)
                         .on_input_change(send_typing)
+                        .on_input_key(|s: &mut State, ev: &KeyEvent, _: &mut Tx| {
+                            s.escape_key(&ev.key)
+                        })
                         .on_submit(send),
                 )
                 .child(el().w(90.0).child(button(
@@ -864,6 +874,7 @@ fn header(s: &State) -> El {
                     t.text_secondary,
                 )
                 .on_edit(|s: &mut State| &mut s.search_draft)
+                .on_input_key(|s: &mut State, ev: &KeyEvent, _: &mut Tx| s.escape_key(&ev.key))
                 .on_submit(search),
         );
     if s.guild.is_some() && s.channel.is_some() {
@@ -1027,6 +1038,9 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
             ),
     )
 }
+fn on_key(s: &mut State, ev: &KeyEvent, _: &mut Tx) -> bool {
+    s.escape_key(&ev.key)
+}
 fn demo(s: &mut State) {
     s.demo = true;
     s.status = "Demo · no network".into();
@@ -1133,6 +1147,7 @@ pub fn run() {
             }
         }),
         poll: Some(events::poll),
+        on_key: Some(on_key),
         scenes: &[
             ("main", demo),
             ("voice", voice_panel::demo),
@@ -1303,5 +1318,20 @@ mod tests {
         s.guild = None;
         s.channel = Some("200".into());
         assert_eq!(s.search_scope(), Some(Scope::Channel("200".into())));
+    }
+    #[test]
+    fn escape_closes_search_only_when_open() {
+        let mut s = State::default();
+        demo(&mut s);
+        s.search_draft.replace_text("rust");
+        start_search(&mut s);
+        assert!(s.search.is_some());
+        assert!(s.escape_key(&Key::Escape));
+        assert!(s.search.is_none() && s.search_error.is_none());
+        assert!(!s.escape_key(&Key::Escape));
+        s.search_draft.replace_text("rust");
+        start_search(&mut s);
+        assert!(!s.escape_key(&Key::Tab));
+        assert!(s.search.is_some());
     }
 }
