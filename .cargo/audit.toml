@@ -1,0 +1,11 @@
+# cargo-audit configuration. Keep the ignore list in sync with deny.toml.
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0370", # zvariant unmaintained; transitive via rune/keyring (zbus 5)
+    "RUSTSEC-2026-0371", # zbus_names unmaintained; transitive via rune/keyring (zbus 5)
+    "RUSTSEC-2026-0372", # zvariant_derive unmaintained; transitive via rune/keyring (zbus 5)
+]
+
+[output]
+deny = ["warnings"]
+quiet = false
