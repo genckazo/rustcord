@@ -1,6 +1,6 @@
 # Rustcord
 
-A lightweight, privacy-focused Discord desktop client written in Rust, primarily for macOS and also buildable on Linux. Phase 1 supports guild text channels and DMs, live messages, sending, and paginated history. Voice, attachments, avatars, threads, search and rich formatting are not implemented.
+A lightweight, privacy-focused Discord desktop client written in Rust, primarily for macOS and also buildable on Linux. The client supports guild text channels and DMs, live messages, sending, and paginated history. The transcript shows embed cards and received attachments. Voice, file uploads, avatars, threads, search and rich formatting in message text are not implemented.
 
 **Warning:** Third-party clients using Discord user tokens violate Discord's Terms of Service and may result in account restrictions or termination. This is experimental, unofficial software; use at your own risk. Never share a token: it grants access to your account.
 
@@ -28,7 +28,7 @@ Select a server or Direct messages, select a text channel, and type a message; E
 
 ## Privacy
 
-No telemetry, analytics, tracking endpoints (`/science` included), message database, or message disk cache. Only Discord REST at `discord.com` and WebSocket Gateway at `gateway.discord.gg` are contacted. HTTP redirects and environment proxies are disabled. Resume URLs are used only if they match the allowlist exactly; regional hosts fall back to the canonical gateway. `cdn.discordapp.com` is reserved for future attachments but is not currently contacted. Discord itself still receives your token, IP address, and chat activity. The UI framework's local headless tools write PNGs only when explicitly invoked. OS swap, crash collection, screenshots, and clipboard history are outside the app's control.
+No telemetry, analytics, tracking endpoints (`/science` included), message database, or message disk cache. Rustcord contacts only Discord REST at `discord.com` and WebSocket Gateway at `gateway.discord.gg`. HTTP redirects and environment proxies are disabled. Resume URLs are used only if they match the allowlist exactly; regional hosts fall back to the canonical gateway. Viewing messages does not load remote images or files. Clicking a link hands its URL (not your authorization token) to your browser, where normal browser history and downloads apply. Attachment links must point to Discord's CDN or media proxy and may expire. Discord itself still receives your token, IP address, and chat activity. The UI framework's local headless tools write PNGs only when explicitly invoked. OS swap, crash collection, screenshots, and clipboard history are outside the app's control.
 
 ## Architecture
 
