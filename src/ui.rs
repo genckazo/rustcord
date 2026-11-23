@@ -238,6 +238,21 @@ fn send(s: &mut State, _: &mut Tx) {
         });
     }
 }
+fn send_typing(s: &mut State, _: &mut Tx) {
+    if s.demo || s.sending {
+        return;
+    }
+    let now = std::time::Instant::now();
+    if let Some(channel) = s.channel.clone() {
+        if s.store.typing.can_send(&channel, &s.draft.text, now)
+            && s.network
+                .as_ref()
+                .is_some_and(|n| n.tx.try_send(Command::Typing(channel.clone())).is_ok())
+        {
+            s.store.typing.sent(channel, now);
+        }
+    }
+}
 fn label(value: impl Into<String>) -> El {
     text(value.into())
         .font(type_::BODY)
@@ -460,6 +475,10 @@ fn chat(s: &State) -> El {
                 })
                 .child(messages),
         );
+        let typing = s.store.typing.label(channel, std::time::Instant::now());
+        if !typing.is_empty() {
+            main = main.child(text(typing).font(type_::BODY).color(t.text_secondary));
+        }
         main = main.child(
             row()
                 .gap(8.0)
@@ -476,6 +495,7 @@ fn chat(s: &State) -> El {
                         .color(t.text)
                         .placeholder("Write a message…", t.text_secondary)
                         .on_edit(|s: &mut State| &mut s.draft)
+                        .on_input_change(send_typing)
                         .on_submit(send),
                 )
                 .child(el().w(90.0).child(button(

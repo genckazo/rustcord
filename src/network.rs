@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
 pub enum Command {
+    Typing(String),
     History {
         channel: String,
         before: Option<String>,
@@ -24,6 +25,7 @@ pub enum Command {
     },
 }
 pub enum Event {
+    TypingTick,
     Status(String),
     Dispatch(String, Value),
     History(String, Result<Vec<Message>, String>),
@@ -77,9 +79,20 @@ impl Network {
                     return;
                 };
                 let gateway = tokio::spawn(gateway::run(token, events.clone()));
+                let ticks = async {
+                    let mut timer = tokio::time::interval(std::time::Duration::from_millis(500));
+                    loop {
+                        timer.tick().await;
+                        events.send(Event::TypingTick).await;
+                    }
+                };
                 let worker = async {
                     while let Some(command) = commands.recv().await {
                         let event = match command {
+                            Command::Typing(channel) => {
+                                let _ = api.typing(&channel).await;
+                                continue;
+                            }
                             Command::History { channel, before } => {
                                 let result = api.messages(&channel, before.as_deref()).await;
                                 Event::History(channel, result)
@@ -107,7 +120,7 @@ impl Network {
                         events.send(event).await;
                     }
                 };
-                tokio::select! { _ = stopped => {}, _ = worker => {} }
+                tokio::select! { _ = stopped => {}, _ = worker => {}, _ = ticks => {} }
                 gateway.abort();
                 let _ = gateway.await;
             });

@@ -6,6 +6,7 @@ mod network;
 mod notifications;
 mod search;
 mod store;
+mod typing;
 mod ui;
 
 fn main() {
