@@ -62,7 +62,7 @@ impl Api {
                     .as_f64()
                     .filter(|n| n.is_finite() && *n >= 0.0)
                     .ok_or("Invalid retry_after")?;
-                tokio::time::sleep(Duration::from_secs_f64(seconds.max(0.05))).await;
+                tokio::time::sleep(retry_delay(seconds)).await;
                 continue;
             }
             if !response.status().is_success() {
@@ -145,6 +145,12 @@ fn dm_body(user: &str) -> Result<Value, String> {
     valid_id(user)?;
     Ok(json!({"recipients": [user]}))
 }
+/// Upper bound on a Discord `retry_after` sleep: a pathological value must not
+/// stall the serialized REST worker for every queued call.
+const MAX_RETRY_DELAY_SECS: f64 = 60.0;
+fn retry_delay(retry_after_secs: f64) -> Duration {
+    Duration::from_secs_f64(retry_after_secs.clamp(0.05, MAX_RETRY_DELAY_SECS))
+}
 fn valid_id(id: &str) -> Result<(), String> {
     if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
         Ok(())
@@ -155,7 +161,8 @@ fn valid_id(id: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_id;
+    use super::{retry_delay, valid_id, MAX_RETRY_DELAY_SECS};
+    use std::time::Duration;
 
     #[test]
     fn create_dm_body() {
@@ -166,11 +173,25 @@ mod tests {
         assert!(super::dm_body("").is_err());
         assert!(super::dm_body("../users").is_err());
     }
+
     #[test]
     fn ids_cannot_escape_discord_routes() {
         assert!(valid_id("123456789").is_ok());
         for id in ["", "../science", "123?redirect=evil", "https://example.com"] {
             assert!(valid_id(id).is_err());
         }
+    }
+    #[test]
+    fn retry_delay_is_clamped_to_a_sane_maximum() {
+        assert_eq!(
+            retry_delay(3600.0),
+            Duration::from_secs_f64(MAX_RETRY_DELAY_SECS)
+        );
+        assert_eq!(
+            retry_delay(120.5),
+            Duration::from_secs_f64(MAX_RETRY_DELAY_SECS)
+        );
+        assert_eq!(retry_delay(2.5), Duration::from_secs_f64(2.5));
+        assert_eq!(retry_delay(0.0), Duration::from_secs_f64(0.05));
     }
 }
