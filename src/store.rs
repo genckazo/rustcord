@@ -4,6 +4,7 @@ use std::collections::{HashMap, VecDeque};
 pub const MESSAGE_CAP: usize = 200;
 #[derive(Default)]
 pub struct Store {
+    pub typing: crate::typing::Typing,
     pub user: Option<User>,
     pub users: HashMap<String, User>,
     pub guilds: HashMap<String, Guild>,
@@ -87,6 +88,7 @@ impl Store {
         }
     }
     pub fn remove_channel(&mut self, id: &str) {
+        self.typing.remove_channel(id);
         self.channels.remove(id);
         self.messages.remove(id);
     }
