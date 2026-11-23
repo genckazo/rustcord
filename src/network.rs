@@ -2,6 +2,7 @@ use crate::{
     api::Api,
     gateway,
     model::{Channel, Message},
+    store::{Direction, HISTORY_LIMIT},
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -10,7 +11,8 @@ use zeroize::Zeroizing;
 pub enum Command {
     History {
         channel: String,
-        before: Option<String>,
+        cursor: Option<String>,
+        direction: Direction,
     },
     Send {
         channel: String,
@@ -21,7 +23,7 @@ pub enum Command {
 pub enum Event {
     Status(String),
     Dispatch(String, Value),
-    History(String, Result<Vec<Message>, String>),
+    History(String, Direction, Result<Vec<Message>, String>),
     Sent(Result<Message, String>),
     Channels(Result<Vec<Channel>, String>),
 }
@@ -70,9 +72,21 @@ impl Network {
                 let worker = async {
                     while let Some(command) = commands.recv().await {
                         let event = match command {
-                            Command::History { channel, before } => {
-                                let result = api.messages(&channel, before.as_deref()).await;
-                                Event::History(channel, result)
+                            Command::History {
+                                channel,
+                                cursor,
+                                direction,
+                            } => {
+                                let before = (direction == Direction::Older)
+                                    .then_some(cursor.as_deref())
+                                    .flatten();
+                                let after = (direction == Direction::Newer)
+                                    .then_some(cursor.as_deref())
+                                    .flatten();
+                                let result = api
+                                    .messages(&channel, before, after, Some(HISTORY_LIMIT))
+                                    .await;
+                                Event::History(channel, direction, result)
                             }
                             Command::Send { channel, content } => {
                                 Event::Sent(api.send(&channel, &content).await)
