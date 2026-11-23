@@ -438,7 +438,7 @@ fn chat(s: &State) -> El {
                     "{} {}",
                     if c.guild_id.is_none() {
                         if c.kind == 3 {
-                            "@@"
+                            "◦"
                         } else {
                             "@"
                         }
