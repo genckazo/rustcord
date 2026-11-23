@@ -2,9 +2,11 @@ use super::State;
 use crate::{
     model::{Channel, Guild, Message, User},
     network::Event,
+    notifications,
     store::Store,
 };
 use rune::Tx;
+use serde::Deserialize;
 use serde_json::Value;
 
 fn dispatch(s: &mut State, name: &str, data: Value) {
@@ -43,7 +45,10 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
             }
         }
         "MESSAGE_CREATE" => {
-            if let Ok(m) = serde_json::from_value::<Message>(data) {
+            if let Ok(m) = Message::deserialize(&data) {
+                if let Some(kind) = notifications::for_message(&s.store, &m, &data) {
+                    notifications::post(kind);
+                }
                 s.store.insert(m);
             }
         }

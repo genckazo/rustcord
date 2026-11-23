@@ -26,6 +26,12 @@ Discord does not provide an officially supported user-token login flow for third
 
 Select a server or Direct messages, select a text channel, and type a message; Enter sends. Scroll to the top (or use Load older messages) for history; Scroll to bottom jumps back to recent messages. Mentions are sent with automatic mention parsing disabled.
 
+### macOS notifications
+
+The signed `Rustcord.app` can show silent macOS notifications for incoming DMs and direct server mentions when the Rustcord window is not focused. The first eligible message asks for permission. Change permission in **System Settings → Notifications → Rustcord** (System Preferences on older macOS versions). Alerts contain no sender, channel, or message text. Discord's server and channel notification preferences do not sync to Rustcord.
+
+Notifications are unavailable with `cargo run` and on Linux. For local development, build the app bundle as described below and sign it before opening it (for example, `codesign --force --sign - dist/Rustcord.app` for ad-hoc signing on your Mac).
+
 ## Privacy
 
 No telemetry, analytics, tracking endpoints (`/science` included), message database, or message disk cache. Only Discord REST at `discord.com` and WebSocket Gateway at `gateway.discord.gg` are contacted. HTTP redirects and environment proxies are disabled. Resume URLs are used only if they match the allowlist exactly; regional hosts fall back to the canonical gateway. `cdn.discordapp.com` is reserved for future attachments but is not currently contacted. Discord itself still receives your token, IP address, and chat activity. The UI framework's local headless tools write PNGs only when explicitly invoked. OS swap, crash collection, screenshots, and clipboard history are outside the app's control.
