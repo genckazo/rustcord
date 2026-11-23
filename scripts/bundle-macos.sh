@@ -70,7 +70,7 @@ mounted=1
 packaged_app="$mount/Rustcord.app"
 test "$(readlink "$mount/Applications")" = /Applications
 test -x "$packaged_app/$executable"
-lipo -verify_arch "$arch" "$packaged_app/$executable"
+lipo "$packaged_app/$executable" -verify_arch "$arch"
 codesign --verify --strict "$packaged_app"
 hdiutil detach "$mount"
 mounted=0
