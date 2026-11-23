@@ -2,6 +2,7 @@ use crate::{
     api::Api,
     gateway,
     model::{Channel, Message},
+    search::Query,
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -18,6 +19,11 @@ pub enum Command {
         content: String,
     },
     Channels(String),
+    OpenDm(String),
+    Search {
+        query: Query,
+        offset: usize,
+    },
 }
 pub enum Event {
     TypingTick,
@@ -26,6 +32,12 @@ pub enum Event {
     History(String, Result<Vec<Message>, String>),
     Sent(Result<Message, String>),
     Channels(Result<Vec<Channel>, String>),
+    OpenedDm(Result<Channel, String>),
+    Search {
+        query: Query,
+        offset: usize,
+        result: Result<(usize, Vec<Message>), String>,
+    },
 }
 #[derive(Clone)]
 pub struct Events {
@@ -79,6 +91,7 @@ impl Network {
                 let worker = async {
                     while let Some(command) = commands.recv().await {
                         let event = match command {
+                            Command::OpenDm(user) => Event::OpenedDm(api.open_dm(&user).await),
                             Command::Typing(channel) => {
                                 let _ = api.typing(&channel).await;
                                 continue;
@@ -89,6 +102,14 @@ impl Network {
                             }
                             Command::Send { channel, content } => {
                                 Event::Sent(api.send(&channel, &content).await)
+                            }
+                            Command::Search { query, offset } => {
+                                let result = api.search(&query, offset).await;
+                                Event::Search {
+                                    query,
+                                    offset,
+                                    result,
+                                }
                             }
                             Command::Channels(guild) => {
                                 Event::Channels(api.channels(&guild).await.map(|mut channels| {

@@ -1,4 +1,7 @@
-use crate::model::{Channel, Message};
+use crate::{
+    model::{Channel, Message},
+    search::{self, Query},
+};
 use reqwest::{Client, Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -26,11 +29,23 @@ impl Api {
         path: &str,
         body: Option<Value>,
     ) -> Result<T, String> {
+        self.request_with_query(method, path, &[], body).await
+    }
+    async fn request_with_query<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<Value>,
+    ) -> Result<T, String> {
         for _ in 0..8 {
             let mut request = self
                 .client
                 .request(method.clone(), format!("https://discord.com/api/v10{path}"))
                 .header("Authorization", self.token.as_str());
+            if !query.is_empty() {
+                request = request.query(query);
+            }
             if let Some(ref body) = body {
                 request = request.json(body);
             }
@@ -90,6 +105,27 @@ impl Api {
         )
         .await
     }
+    pub async fn search(
+        &self,
+        query: &Query,
+        offset: usize,
+    ) -> Result<(usize, Vec<Message>), String> {
+        for id in query.ids() {
+            valid_id(id)?;
+        }
+        for _ in 0..3 {
+            let data: Value = self
+                .request_with_query(Method::GET, &query.path(), &query.params(offset), None)
+                .await?;
+            match search::parse(data)? {
+                search::Response::Page { total, messages } => return Ok((total, messages)),
+                search::Response::Indexing { retry_after } => {
+                    tokio::time::sleep(Duration::from_secs_f64(retry_after.clamp(0.5, 10.0))).await;
+                }
+            }
+        }
+        Err("Discord is still indexing these messages; try searching again shortly.".into())
+    }
     pub async fn channels(&self, guild: &str) -> Result<Vec<Channel>, String> {
         valid_id(guild)?;
         self.request(Method::GET, &format!("/guilds/{guild}/channels"), None)
@@ -100,6 +136,14 @@ impl Api {
         self.request(Method::POST, &format!("/channels/{channel}/typing"), None)
             .await
     }
+    pub async fn open_dm(&self, user: &str) -> Result<Channel, String> {
+        self.request(Method::POST, "/users/@me/channels", Some(dm_body(user)?))
+            .await
+    }
+}
+fn dm_body(user: &str) -> Result<Value, String> {
+    valid_id(user)?;
+    Ok(json!({"recipients": [user]}))
 }
 fn valid_id(id: &str) -> Result<(), String> {
     if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
@@ -112,6 +156,16 @@ fn valid_id(id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::valid_id;
+
+    #[test]
+    fn create_dm_body() {
+        assert_eq!(
+            super::dm_body("123").unwrap(),
+            serde_json::json!({"recipients":["123"]})
+        );
+        assert!(super::dm_body("").is_err());
+        assert!(super::dm_body("../users").is_err());
+    }
     #[test]
     fn ids_cannot_escape_discord_routes() {
         assert!(valid_id("123456789").is_ok());

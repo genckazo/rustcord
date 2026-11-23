@@ -1,31 +1,42 @@
 #!/usr/bin/env bash
-# Builds dist/Rustcord.app from a release-profile build and reports binary sizes.
-# Default: universal binary (arm64 + x86_64). `--native` builds only the host architecture.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [[ "$(uname -s)" != Darwin ]]; then
   echo "This script must run on macOS." >&2
   exit 1
 fi
-case "${1:-}" in
-  "") targets=(aarch64-apple-darwin x86_64-apple-darwin) ;;
-  --native) targets=("$(uname -m | sed 's/^arm64$/aarch64/')-apple-darwin") ;;
-  *) echo "usage: $0 [--native]" >&2; exit 2 ;;
-esac
 export MACOSX_DEPLOYMENT_TARGET=11.0
-rustup target add "${targets[@]}"
-slices=()
-for target in "${targets[@]}"; do
-  cargo build --release --locked --target "$target"
-  slices+=("target/$target/release/rustcord")
-done
-app="dist/Rustcord.app"
-rm -rf "$app"
+target="$(rustc -vV | sed -n 's/^host: //p')"
+case "$target" in
+  aarch64-apple-darwin) arch=arm64 ;;
+  x86_64-apple-darwin) arch=x86_64 ;;
+  *) echo "Unsupported Rust host: $target" >&2; exit 1 ;;
+esac
+cargo build --release --locked --target "$target" --target-dir target
+package_id="$(cargo pkgid --locked -p rustcord)"
+version="${package_id##*#}"
+bundle_version="${version%%[-+]*}"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/rustcord.XXXXXX")"
+stage="$work/stage"
+mount="$work/mount"
+mounted=0
+cleanup() {
+  if (( mounted )); then
+    hdiutil detach "$mount" >&2 || return 1
+  fi
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+app="$stage/Rustcord.app"
+executable="Contents/MacOS/rustcord"
+dmg_name="Rustcord-${version}-macos-${arch}.dmg"
+dmg="$work/$dmg_name"
 mkdir -p "$app/Contents/MacOS"
-lipo -create -output "$app/Contents/MacOS/rustcord" "${slices[@]}"
-chmod +x "$app/Contents/MacOS/rustcord"
-lipo -info "$app/Contents/MacOS/rustcord"
-cat > "$app/Contents/Info.plist" <<'PLIST'
+install -m 755 "target/$target/release/rustcord" "$app/$executable"
+ln -s /Applications "$stage/Applications"
+cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -33,13 +44,42 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>app.rustcord.desktop</string>
   <key>CFBundleName</key><string>Rustcord</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
-  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>CFBundleShortVersionString</key><string>$bundle_version</string>
+  <key>CFBundleVersion</key><string>$bundle_version</string>
+  <key>LSMinimumSystemVersion</key><string>$MACOSX_DEPLOYMENT_TARGET</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
 plutil -lint "$app/Contents/Info.plist"
+if [[ -n "${MACOS_SIGNING_IDENTITY:-}" ]]; then
+  codesign --force --options runtime --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$app"
+else
+  codesign --force --sign - "$app"
+fi
+
+hdiutil create -srcfolder "$stage" -volname Rustcord -format UDZO "$dmg"
+if [[ -n "${MACOS_SIGNING_IDENTITY:-}" ]]; then
+  codesign --timestamp --sign "$MACOS_SIGNING_IDENTITY" --identifier app.rustcord.desktop.dmg "$dmg"
+  codesign --verify "$dmg"
+fi
+hdiutil verify "$dmg"
+
+mkdir "$mount"
+hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount"
+mounted=1
+packaged_app="$mount/Rustcord.app"
+test "$(readlink "$mount/Applications")" = /Applications
+test -x "$packaged_app/$executable"
+lipo "$packaged_app/$executable" -verify_arch "$arch"
+codesign --verify --strict "$packaged_app"
+hdiutil detach "$mount"
+mounted=0
+
+mkdir -p dist
+rm -rf dist/Rustcord.app
+mv "$app" dist/Rustcord.app
+mv -f "$dmg" "dist/$dmg_name"
+echo "Built dist/Rustcord.app and dist/$dmg_name"
 
 size_row() {
   local bytes
@@ -47,15 +87,14 @@ size_row() {
   printf '| %s | %s | %s MiB |\n' "$1" "$bytes" "$(awk -v b="$bytes" 'BEGIN { printf "%.2f", b / 1048576 }')"
 }
 report=$(
-  echo "### Release binary size"
+  echo "### Release size ($arch)"
   echo
-  echo "| Binary | Bytes | Size |"
+  echo "| File | Bytes | Size |"
   echo "|---|---:|---:|"
-  for i in "${!targets[@]}"; do size_row "${targets[$i]}" "${slices[$i]}"; done
-  size_row "Rustcord.app/Contents/MacOS/rustcord" "$app/Contents/MacOS/rustcord"
+  size_row "Rustcord.app/$executable" "dist/Rustcord.app/$executable"
+  size_row "$dmg_name" "dist/$dmg_name"
 )
 echo "$report"
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   echo "$report" >> "$GITHUB_STEP_SUMMARY"
 fi
-echo "Built $app"
