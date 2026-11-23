@@ -1,6 +1,6 @@
 # Rustcord
 
-A lightweight, privacy-focused Discord desktop client written in Rust, primarily for macOS and also buildable on Linux. Phase 1 supports guild text channels and DMs, live messages, sending, and paginated history. Voice, attachments, avatars, threads, search and rich formatting are not implemented.
+A lightweight, privacy-focused Discord desktop client written in Rust, primarily for macOS and also buildable on Linux. Phase 1 supports guild text channels and DMs, live messages, sending, paginated history, and message search. Voice, attachments, avatars, threads and rich formatting are not implemented.
 
 **Warning:** Third-party clients using Discord user tokens violate Discord's Terms of Service and may result in account restrictions or termination. This is experimental, unofficial software; use at your own risk. Never share a token: it grants access to your account.
 
@@ -26,6 +26,8 @@ Discord does not provide an officially supported user-token login flow for third
 
 Select a server or Direct messages, select a text channel, and type a message; Enter sends. Scroll to the top (or use Load older messages) for history; Scroll to bottom jumps back to recent messages. Mentions are sent with automatic mention parsing disabled.
 
+Use the search field above the conversation to search the selected server (tick **This channel** to limit it to the open channel) or the open DM. Results load 25 at a time (Load more results); click one to open its channel. Search runs on Discord's servers, so the query text is sent to Discord; results are held in memory only and cleared when you switch server or log out. If Discord is still indexing a server, Rustcord retries briefly and then asks you to try again.
+
 ## Privacy
 
 No telemetry, analytics, tracking endpoints (`/science` included), message database, or message disk cache. Only Discord REST at `discord.com` and WebSocket Gateway at `gateway.discord.gg` are contacted. HTTP redirects and environment proxies are disabled. Resume URLs are used only if they match the allowlist exactly; regional hosts fall back to the canonical gateway. `cdn.discordapp.com` is reserved for future attachments but is not currently contacted. Discord itself still receives your token, IP address, and chat activity. The UI framework's local headless tools write PNGs only when explicitly invoked. OS swap, crash collection, screenshots, and clipboard history are outside the app's control.
@@ -44,8 +46,9 @@ cargo build --release
 mkdir -p screenshots
 target/release/rustcord --snap screenshots/login.png
 target/release/rustcord --scene main --snap screenshots/main.png
+target/release/rustcord --scene search --snap screenshots/search.png
 ```
 
-Both scenes render with Rune headlessly, without reading the OS keychain or making network requests; the main scene uses fake data. A usable GPU backend is required (Mesa llvmpipe works on Linux). Never run headless capture tooling against a real logged-in session: diagnostic output may contain visible messages.
+All scenes render with Rune headlessly, without reading the OS keychain or making network requests; the main scene uses fake data. A usable GPU backend is required (Mesa llvmpipe works on Linux). Never run headless capture tooling against a real logged-in session: diagnostic output may contain visible messages.
 
 On macOS, `bash scripts/bundle-macos.sh` creates `dist/Rustcord.app` (macOS 11+). The app is unsigned and not notarized; it is a development bundle, built for the runner's architecture, not a universal binary. CI uploads a zipped bundle preserving executable permissions.
