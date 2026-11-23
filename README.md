@@ -83,8 +83,18 @@ Ringbuf was upgraded to a fixed release rather than exempted.
 
 ## Checks and deterministic screenshots
 
+To run the CI checks locally, e.g. before pushing:
+
 ```sh
-cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+cargo install --locked cargo-deny cargo-audit   # once
+bash scripts/check.sh
+```
+
+The script stops at the first failure. It runs `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, `cargo deny --locked check`, `cargo audit`, and a release build, then prints the release binary size. The Rust version is pinned in `rust-toolchain.toml`, so rustup installs it on first use. On Linux, install the system libraries first, e.g. on Debian/Ubuntu: `sudo apt-get install cmake pkg-config libopus-dev libssl-dev libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev`.
+
+Deterministic screenshots:
+
+```sh
 cargo build --release
 mkdir -p screenshots
 target/release/rustcord --snap screenshots/login.png
@@ -107,7 +117,7 @@ On macOS with Xcode Command Line Tools and rustup installed, run:
 bash scripts/bundle-macos.sh
 ```
 
-This builds `dist/Rustcord.app` and `dist/Rustcord-<version>-macos-<arch>.dmg` for the installed Rust toolchain's architecture, targeting macOS 11 or newer. Mount the DMG and drag Rustcord to Applications. CI builds and checks separate packages for Apple silicon (`arm64`) and Intel (`x86_64`) and uploads each DMG alongside a ZIP of the app.
+This builds `dist/Rustcord.app` and `dist/Rustcord-<version>-macos-<arch>.dmg` for the installed Rust toolchain's architecture, targeting macOS 11 or newer. Mount the DMG and drag Rustcord to Applications. The script also mounts the DMG to check it: it verifies the `/Applications` link, the executable's architecture and the code signature. A local build covers only the Mac's own architecture. CI builds and checks separate packages for Apple silicon (`arm64`) and Intel (`x86_64`) and uploads each DMG alongside a ZIP of the app.
 
 Local and CI packages are ad hoc signed and not notarized. They are for development and may be blocked by Gatekeeper when downloaded. For distribution, install a **Developer ID Application** certificate in your keychain and set `MACOS_SIGNING_IDENTITY` to its name when running the script. Then run the following with the resulting DMG path and a configured notarytool keychain profile:
 
