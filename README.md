@@ -1,6 +1,6 @@
 # Rustcord
 
-A lightweight, privacy-focused Discord desktop client written in Rust, primarily for macOS and also buildable on Linux. The client supports guild text channels and DMs, live messages, sending, and paginated history. The transcript shows embed cards and received attachments. Voice, file uploads, avatars, threads, search and rich formatting in message text are not implemented.
+A lightweight, privacy-focused Discord desktop client written in Rust, primarily for macOS and also buildable on Linux. The client supports guild text channels and DMs, live messages, sending, paginated history, and message search. The transcript shows embed cards and received attachments. Voice, file uploads, avatars, threads and rich formatting in message text are not implemented.
 
 **Warning:** Third-party clients using Discord user tokens violate Discord's Terms of Service and may result in account restrictions or termination. This is experimental, unofficial software; use at your own risk. Never share a token: it grants access to your account.
 
@@ -26,6 +26,8 @@ Discord does not provide an officially supported user-token login flow for third
 
 Select a server or Direct messages, select a text channel, and type a message; Enter sends. Scroll to the top (or use Load older messages) for history; Scroll to bottom jumps back to recent messages. Mentions are sent with automatic mention parsing disabled.
 
+Use the search field above the conversation to search the selected server (tick **This channel** to limit it to the open channel) or the open DM. Results load 25 at a time (Load more results); click one to open its channel. Search runs on Discord's servers, so the query text is sent to Discord; results are held in memory only and cleared when you switch server or log out. If Discord is still indexing a server, Rustcord retries briefly and then asks you to try again.
+
 ### macOS notifications
 
 The signed `Rustcord.app` can show silent macOS notifications for incoming DMs and direct server mentions when the Rustcord window is not focused. The first eligible message asks for permission. Change permission in **System Settings → Notifications → Rustcord** (System Preferences on older macOS versions). Alerts contain no sender, channel, or message text. Discord's server and channel notification preferences do not sync to Rustcord.
@@ -50,10 +52,11 @@ cargo build --release
 mkdir -p screenshots
 target/release/rustcord --snap screenshots/login.png
 target/release/rustcord --scene main --snap screenshots/main.png
+target/release/rustcord --scene search --snap screenshots/search.png
 ```
 
 Supply-chain checks (also run by `.github/workflows/supply-chain.yml` on PRs, pushes to main and weekly): `cargo audit` (config in `.cargo/audit.toml`) and `cargo deny --locked check` (config in `deny.toml`). Ignored advisories are listed with their reason in both files.
 
-Both scenes render with Rune headlessly, without reading the OS keychain or making network requests; the main scene uses fake data. A usable GPU backend is required (Mesa llvmpipe works on Linux). Never run headless capture tooling against a real logged-in session: diagnostic output may contain visible messages.
+All scenes render with Rune headlessly, without reading the OS keychain or making network requests; the main scene uses fake data. A usable GPU backend is required (Mesa llvmpipe works on Linux). Never run headless capture tooling against a real logged-in session: diagnostic output may contain visible messages.
 
 On macOS, `bash scripts/bundle-macos.sh` creates `dist/Rustcord.app` (macOS 11+). The app is unsigned and not notarized; it is a development bundle, built for the runner's architecture, not a universal binary. CI uploads a zipped bundle preserving executable permissions.

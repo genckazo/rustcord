@@ -69,14 +69,13 @@ mod tests {
                 (id.to_owned(), channel)
             })
             .collect();
-        Store {
-            user: Some(User {
-                id: "me".into(),
-                ..User::default()
-            }),
-            channels,
-            ..Store::default()
-        }
+        let mut store = Store::default();
+        store.user = Some(User {
+            id: "me".into(),
+            ..User::default()
+        });
+        store.channels = channels;
+        store
     }
 
     fn message(channel: &str) -> Message {

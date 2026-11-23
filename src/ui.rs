@@ -6,6 +6,7 @@ use crate::{
     auth,
     model::{Channel, Guild, Message, User},
     network::{Command, Network},
+    search::{Query, Scope, Search},
     store::Store,
 };
 use rune::{
@@ -32,6 +33,10 @@ pub struct State {
     demo: bool,
     sending: bool,
     scroll_top: Rc<Cell<bool>>,
+    search_draft: TextEdit,
+    search_here: bool,
+    search: Option<Search>,
+    search_error: Option<String>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -51,6 +56,10 @@ impl Default for State {
             demo: false,
             sending: false,
             scroll_top: Rc::new(Cell::new(false)),
+            search_draft: TextEdit::default(),
+            search_here: false,
+            search: None,
+            search_error: None,
         }
     }
 }
@@ -102,8 +111,58 @@ impl State {
             self.loading.insert(channel);
         }
     }
+    fn search_scope(&self) -> Option<Scope> {
+        match (&self.guild, &self.channel) {
+            (Some(guild), channel) => Some(Scope::Guild {
+                guild: guild.clone(),
+                channel: channel.clone().filter(|_| self.search_here),
+            }),
+            (None, Some(channel)) => Some(Scope::Channel(channel.clone())),
+            (None, None) => None,
+        }
+    }
+    fn search_page(&mut self, offset: usize) {
+        let Some(search) = &mut self.search else {
+            return;
+        };
+        if self.demo {
+            let query = search.query.clone();
+            let mut hits: Vec<Message> = self
+                .store
+                .messages
+                .values()
+                .flatten()
+                .filter(|m| query.matches(m))
+                .cloned()
+                .collect();
+            hits.sort_by_key(|m| std::cmp::Reverse(m.id.parse::<u64>().unwrap_or(0)));
+            search.apply(offset, Ok((hits.len(), hits)));
+            return;
+        }
+        let query = search.query.clone();
+        search.loading = true;
+        if !self.command(Command::Search { query, offset }) {
+            if let Some(search) = &mut self.search {
+                search.loading = false;
+            }
+        }
+    }
+    fn close_search(&mut self) {
+        self.search = None;
+        self.search_error = None;
+    }
+    fn reset_search(&mut self) {
+        self.close_search();
+        self.search_draft.clear();
+    }
     fn select(&mut self, channel: String, tx: &mut Tx) {
+        if self.guild.is_none() && self.channel.as_ref() != Some(&channel) {
+            self.reset_search();
+        } else {
+            self.close_search();
+        }
         self.channel = Some(channel.clone());
+        self.store.pin(Some(channel.clone()));
         self.draft.clear();
         if !self.store.messages.contains_key(&channel) {
             self.history(channel, false);
@@ -144,6 +203,7 @@ fn logout(s: &mut State, _: &mut Tx) {
     s.exhausted.clear();
     s.sending = false;
     s.demo = false;
+    s.reset_search();
     s.status = "Offline".into();
     s.error = if auth::clear().is_err() {
         "Could not clear keychain. Remove rustcord/discord-token manually from your OS keychain."
@@ -151,6 +211,31 @@ fn logout(s: &mut State, _: &mut Tx) {
     } else {
         String::new()
     };
+}
+fn search(s: &mut State, _: &mut Tx) {
+    start_search(s);
+}
+fn start_search(s: &mut State) {
+    let Some(scope) = s.search_scope() else {
+        return;
+    };
+    match Query::new(scope, &s.search_draft.text) {
+        Ok(query) => {
+            if s.search
+                .as_ref()
+                .is_some_and(|x| x.query == query && x.loading)
+            {
+                return;
+            }
+            s.search_error = None;
+            s.search = Some(Search::new(query));
+            s.search_page(0);
+        }
+        Err(error) => {
+            s.search = None;
+            s.search_error = Some(error);
+        }
+    }
 }
 fn send(s: &mut State, _: &mut Tx) {
     if s.demo || s.sending || s.draft.text.trim().is_empty() {
@@ -249,6 +334,8 @@ fn chat(s: &State) -> El {
             |s, _| {
                 s.guild = None;
                 s.channel = None;
+                s.reset_search();
+                s.store.pin(None);
             },
         ));
     let mut guilds: Vec<_> = s.store.guilds.values().collect();
@@ -263,6 +350,8 @@ fn chat(s: &State) -> El {
             move |s, _| {
                 s.guild = Some(id.clone());
                 s.channel = None;
+                s.reset_search();
+                s.store.pin(None);
                 if s.store.channels_for(Some(&id)).is_empty() {
                     s.command(Command::Channels(id.clone()));
                 }
@@ -342,18 +431,21 @@ fn chat(s: &State) -> El {
                 .child(channel_list),
         );
     let mut main = col().grow(1.0).min_h(0.0).h_full().padding(24.0).gap(18.0);
-    if let Some(channel) = &s.channel {
+    if s.search_scope().is_some() {
+        main = main.child(header(s));
+    }
+    if let Some(error) = &s.search_error {
         main = main.child(
-            text(
-                s.store
-                    .channels
-                    .get(channel)
-                    .map(|c| s.store.channel_label(c))
-                    .unwrap_or_default(),
-            )
-            .font(type_::TITLE)
-            .color(t.text),
+            text(error)
+                .font(type_::BODY)
+                .color(rune::oklch(0.75, 0.13, 25.0))
+                .wrap()
+                .w_full(),
         );
+    }
+    if let Some(search) = &s.search {
+        main = main.child(results(s, search));
+    } else if let Some(channel) = &s.channel {
         let mut messages = col().w_full().gap(18.0).py(12.0);
         if s.loading.contains(channel) {
             messages = messages.child(label("Loading messages…"));
@@ -456,9 +548,13 @@ fn chat(s: &State) -> El {
             tx.scroll_to_bottom("transcript")
         }));
     } else {
-        main = main
-            .center()
-            .child(label("Choose a conversation to begin."));
+        main = main.child(
+            col()
+                .grow(1.0)
+                .w_full()
+                .center()
+                .child(label("Choose a conversation to begin.")),
+        );
     }
     row()
         .grow(1.0)
@@ -467,6 +563,162 @@ fn chat(s: &State) -> El {
         .child(servers)
         .child(channels)
         .child(main)
+}
+fn header(s: &State) -> El {
+    let t = tok::theme(true);
+    let title = match (&s.channel, &s.guild) {
+        (Some(channel), _) => s
+            .store
+            .channels
+            .get(channel)
+            .map(|c| s.store.channel_label(c))
+            .unwrap_or_default(),
+        (None, Some(guild)) => s
+            .store
+            .guilds
+            .get(guild)
+            .map(|g| g.name.clone())
+            .unwrap_or_default(),
+        (None, None) => String::new(),
+    };
+    let mut bar = row()
+        .gap(8.0)
+        .w_full()
+        .center_y()
+        .child(text(title).font(type_::TITLE).color(t.text).grow(1.0))
+        .child(
+            text_input(&s.search_draft, type_::BODY)
+                .key("search")
+                .single_line()
+                .w(240.0)
+                .h(38.0)
+                .padding(10.0)
+                .radius(8.0)
+                .fill(t.card)
+                .color(t.text)
+                .placeholder(
+                    if s.guild.is_some() {
+                        "Search this server…"
+                    } else {
+                        "Search this conversation…"
+                    },
+                    t.text_secondary,
+                )
+                .on_edit(|s: &mut State| &mut s.search_draft)
+                .on_submit(search),
+        );
+    if s.guild.is_some() && s.channel.is_some() {
+        bar = bar.child(el().w(150.0).child(button(
+            "search-here",
+            if s.search_here {
+                "[✓] This channel"
+            } else {
+                "[ ] This channel"
+            },
+            s.search_here,
+            |s, _| s.search_here = !s.search_here,
+        )));
+    }
+    bar
+}
+fn results(s: &State, search: &Search) -> El {
+    let t = tok::theme(true);
+    let mut list = col().w_full().gap(10.0).py(4.0);
+    for m in &search.results {
+        let channel = s
+            .store
+            .channels
+            .get(&m.channel_id)
+            .map(|c| s.store.channel_label(c))
+            .unwrap_or_else(|| "unknown channel".into());
+        let id = m.channel_id.clone();
+        list = list.child(
+            col()
+                .key(format!("result-{}", m.id))
+                .role("button")
+                .focusable(true)
+                .w_full()
+                .gap(6.0)
+                .padding(12.0)
+                .radius(8.0)
+                .fill(t.card)
+                .hover(t.hover)
+                .on_press_tx(move |s: &mut State, tx| s.select(id.clone(), tx))
+                .child(
+                    row()
+                        .gap(12.0)
+                        .child(
+                            text(m.author.name())
+                                .font(type_::LABEL)
+                                .color(tok::accent(0, true)),
+                        )
+                        .child(
+                            text(format!("# {channel}"))
+                                .font(type_::BODY)
+                                .color(t.text_secondary),
+                        )
+                        .child(text(&m.timestamp).font(type_::BODY).color(t.text_secondary)),
+                )
+                .child(label(&m.content).wrap_anywhere().w_full()),
+        );
+    }
+    if search.loading && !search.results.is_empty() {
+        list = list.child(label("Loading more results…"));
+    } else if search.has_more() {
+        list = list.child(button(
+            "more-results",
+            "Load more results",
+            false,
+            |s, _| {
+                if let Some(offset) = s.search.as_ref().map(|x| x.next_offset) {
+                    s.search_page(offset);
+                }
+            },
+        ));
+    }
+    if let Some(error) = &search.error {
+        list = list.child(
+            text(error)
+                .font(type_::BODY)
+                .color(rune::oklch(0.75, 0.13, 25.0))
+                .wrap()
+                .w_full(),
+        );
+    }
+    col()
+        .grow(1.0)
+        .min_h(0.0)
+        .w_full()
+        .gap(12.0)
+        .child(
+            row()
+                .w_full()
+                .gap(8.0)
+                .center_y()
+                .child(
+                    text(search.summary())
+                        .font(type_::LABEL)
+                        .color(t.text)
+                        .grow(1.0),
+                )
+                .child(el().w(130.0).child(button(
+                    "close-search",
+                    "Close search",
+                    false,
+                    |s, _| s.close_search(),
+                ))),
+        )
+        .child(
+            col()
+                .key("search-results")
+                .grow(1.0)
+                .min_h(0.0)
+                .w_full()
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(list),
+        )
 }
 fn view(s: &State, _: &mut Cx<State>) -> El {
     let t = tok::theme(true);
@@ -585,6 +837,11 @@ fn demo(s: &mut State) {
     s.store.insert(media);
     s.exhausted.insert("102".into());
 }
+fn demo_search(s: &mut State) {
+    demo(s);
+    s.search_draft.replace_text("rustcord");
+    start_search(s);
+}
 pub fn run() {
     rune::run(AppSpec {
         setup: Some(|s: &mut State, waker| {
@@ -608,6 +865,7 @@ pub fn run() {
         poll: Some(events::poll),
         scenes: &[
             ("main", demo),
+            ("search", demo_search),
             ("dms", |s| {
                 demo(s);
                 s.guild = None;
@@ -617,4 +875,39 @@ pub fn run() {
         min_size: Some((800.0, 540.0)),
         ..AppSpec::new("Rustcord", (1120.0, 760.0), State::default, view)
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn demo_search_scopes_and_invalid_queries() {
+        let mut s = State::default();
+        demo(&mut s);
+        s.search_draft.replace_text("RUST");
+        start_search(&mut s);
+        let search = s.search.as_ref().unwrap();
+        assert_eq!(search.results.len(), 1);
+        assert_eq!(search.summary(), "1 result for “RUST”");
+        s.search_draft.replace_text("   ");
+        start_search(&mut s);
+        assert!(s.search.is_none());
+        assert_eq!(
+            s.search_error.as_deref(),
+            Some("Type something to search for.")
+        );
+        s.close_search();
+        assert!(s.search_error.is_none());
+        s.channel = Some("103".into());
+        s.search_here = true;
+        s.search_draft.replace_text("rust");
+        start_search(&mut s);
+        assert_eq!(s.search.as_ref().unwrap().total, 0);
+        s.reset_search();
+        assert!(s.search.is_none() && s.search_draft.text.is_empty());
+        s.guild = None;
+        s.channel = Some("200".into());
+        assert_eq!(s.search_scope(), Some(Scope::Channel("200".into())));
+    }
 }
