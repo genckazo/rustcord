@@ -9,6 +9,7 @@ pub const CHANNEL_CAP: usize = 32;
 pub struct Store {
     pub typing: crate::typing::Typing,
     pub user: Option<User>,
+    pub users: HashMap<String, User>,
     pub guilds: HashMap<String, Guild>,
     pub channels: HashMap<String, Channel>,
     pub messages: HashMap<String, VecDeque<Message>>,
@@ -18,6 +19,58 @@ pub struct Store {
     pinned: Option<String>,
 }
 impl Store {
+    pub fn channel_label(&self, channel: &Channel) -> String {
+        if channel.guild_id.is_some() {
+            return channel.label();
+        }
+        if let Some(name) = channel.name.as_ref().filter(|name| !name.is_empty()) {
+            return name.clone();
+        }
+        let names: Vec<_> = channel
+            .recipients
+            .iter()
+            .chain(channel.recipient_ids.iter().filter_map(|id| {
+                (!channel.recipients.iter().any(|u| &u.id == id))
+                    .then(|| self.users.get(id))
+                    .flatten()
+            }))
+            .filter(|u| self.user.as_ref().is_none_or(|me| me.id != u.id))
+            .map(User::name)
+            .filter(|name| !name.is_empty())
+            .collect();
+        if names.is_empty() {
+            if channel.kind == 3 {
+                "Unnamed group"
+            } else {
+                "Unknown user"
+            }
+            .into()
+        } else {
+            names.join(", ")
+        }
+    }
+    pub fn dm_for(&self, user: &str) -> Option<String> {
+        self.channels
+            .values()
+            .find(|c| {
+                c.guild_id.is_none()
+                    && c.kind == 1
+                    && (c.recipients.iter().any(|u| u.id == user)
+                        || c.recipient_ids.iter().any(|id| id == user))
+            })
+            .map(|c| c.id.clone())
+    }
+    pub fn activity(&mut self, message: &Message) {
+        if let Some(c) = self.channels.get_mut(&message.channel_id) {
+            if c.guild_id.is_none()
+                && c.last_message_id
+                    .as_ref()
+                    .is_none_or(|id| snowflake(id) < snowflake(&message.id))
+            {
+                c.last_message_id = Some(message.id.clone());
+            }
+        }
+    }
     pub fn guild(&mut self, mut guild: Guild) {
         for mut channel in guild.channels.drain(..) {
             channel.guild_id = Some(guild.id.clone());
@@ -90,7 +143,16 @@ impl Store {
             .values()
             .filter(|c| c.guild_id.as_deref() == guild)
             .collect();
-        channels.sort_by_key(|c| (c.position, snowflake(&c.id)));
+        if guild.is_none() {
+            channels.sort_by_key(|c| {
+                (
+                    std::cmp::Reverse(c.last_message_id.as_deref().map(snowflake)),
+                    snowflake(&c.id),
+                )
+            });
+        } else {
+            channels.sort_by_key(|c| (c.position, snowflake(&c.id)));
+        }
         channels
     }
 }
@@ -240,5 +302,23 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["2", "3", "10"]
         );
+    }
+    #[test]
+    fn activity_is_monotonic_and_does_not_reorder_guilds() {
+        let mut store = Store::default();
+        for (id, position) in [("1", 2), ("2", 1)] {
+            let c = serde_json::from_value(
+                serde_json::json!({"id":id,"type":0,"guild_id":"5","position":position}),
+            )
+            .unwrap();
+            store.channels.insert(id.into(), c);
+        }
+        store.activity(&message(100));
+        assert!(store.channels["1"].last_message_id.is_none());
+        assert_eq!(store.channels_for(Some("5"))[0].id, "2");
+        store.channels.get_mut("1").unwrap().guild_id = None;
+        store.activity(&message(100));
+        store.activity(&message(9));
+        assert_eq!(store.channels["1"].last_message_id.as_deref(), Some("100"));
     }
 }

@@ -19,6 +19,7 @@ pub enum Command {
         content: String,
     },
     Channels(String),
+    OpenDm(String),
     Search {
         query: Query,
         offset: usize,
@@ -31,6 +32,7 @@ pub enum Event {
     History(String, Result<Vec<Message>, String>),
     Sent(Result<Message, String>),
     Channels(Result<Vec<Channel>, String>),
+    OpenedDm(Result<Channel, String>),
     Search {
         query: Query,
         offset: usize,
@@ -89,6 +91,7 @@ impl Network {
                 let worker = async {
                     while let Some(command) = commands.recv().await {
                         let event = match command {
+                            Command::OpenDm(user) => Event::OpenedDm(api.open_dm(&user).await),
                             Command::Typing(channel) => {
                                 let _ = api.typing(&channel).await;
                                 continue;
