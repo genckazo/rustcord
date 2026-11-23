@@ -4,7 +4,7 @@ use crate::{
     auth,
     model::{Channel, Guild, Message, User},
     network::{Command, Network},
-    store::Store,
+    store::{Store, MESSAGE_CAP},
 };
 use rune::{
     col, el, row, text, text_input,
@@ -70,6 +70,20 @@ impl State {
             || self.loading.contains(&channel)
             || (older && self.exhausted.contains(&channel))
         {
+            return;
+        }
+        // A full cache keeps only the newest messages, so an older page would be
+        // evicted as soon as it arrived: the fetch would change nothing.
+        // A full cache keeps only the newest messages, so an older page would be
+        // evicted as soon as it arrived: the fetch would change nothing.
+        if older
+            && self
+                .store
+                .messages
+                .get(&channel)
+                .is_some_and(|ms| ms.len() >= MESSAGE_CAP)
+        {
+            self.exhausted.insert(channel);
             return;
         }
         let before = if older {
@@ -515,4 +529,43 @@ pub fn run() {
         min_size: Some((800.0, 540.0)),
         ..AppSpec::new("Rustcord", (1120.0, 760.0), State::default, view)
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(id: u64) -> Message {
+        Message {
+            id: id.to_string(),
+            channel_id: "1".into(),
+            author: User::default(),
+            content: "hello".into(),
+            timestamp: "now".into(),
+        }
+    }
+
+    #[test]
+    fn full_cache_skips_wasted_older_fetch() {
+        let mut state = State::default();
+        for id in 0..MESSAGE_CAP as u64 {
+            state.store.insert(message(id));
+        }
+        assert_eq!(state.store.messages["1"].len(), MESSAGE_CAP);
+        state.history("1".into(), true);
+        // No REST call was issued: the channel is marked exhausted without a
+        // network command being attempted.
+        assert!(state.exhausted.contains("1"));
+        assert!(state.error.is_empty());
+    }
+
+    #[test]
+    fn unfilled_cache_still_fetches_older() {
+        let mut state = State::default();
+        state.store.insert(message(1));
+        state.history("1".into(), true);
+        assert!(!state.exhausted.contains("1"));
+        // With no network the command fails, proving a fetch was attempted.
+        assert_eq!(state.error, "Network queue busy; please try again.");
+    }
 }
