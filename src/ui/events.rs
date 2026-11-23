@@ -8,6 +8,7 @@ use crate::{
 use rune::Tx;
 use serde::Deserialize;
 use serde_json::Value;
+use std::time::Instant;
 
 fn dispatch(s: &mut State, name: &str, data: Value) {
     match name {
@@ -45,11 +46,36 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
                 s.store.remove_channel(id);
             }
         }
+        "TYPING_START" => {
+            if let Ok(event) = serde_json::from_value::<crate::typing::TypingStart>(data) {
+                let known = s
+                    .store
+                    .messages
+                    .get(&event.channel_id)
+                    .and_then(|messages| {
+                        messages.iter().rev().find(|m| m.author.id == event.user_id)
+                    })
+                    .map(|m| &m.author)
+                    .or_else(|| {
+                        s.store
+                            .channels
+                            .get(&event.channel_id)
+                            .and_then(|c| c.recipients.iter().find(|u| u.id == event.user_id))
+                    });
+                s.store.typing.receive(
+                    event,
+                    s.store.user.as_ref().map(|u| u.id.as_str()),
+                    known,
+                    Instant::now(),
+                );
+            }
+        }
         "MESSAGE_CREATE" => {
             if let Ok(m) = Message::deserialize(&data) {
                 if let Some(kind) = notifications::for_message(&s.store, &m, &data) {
                     notifications::post(kind);
                 }
+                s.store.typing.clear(&m.channel_id, &m.author.id);
                 s.store.insert(m);
             }
         }
@@ -85,7 +111,8 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
     }
 }
 pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
-    let mut changed = false;
+    let now = Instant::now();
+    let mut changed = s.store.typing.expire(now);
     if s.scroll_top.replace(false) {
         if let Some(id) = s.channel.clone() {
             s.history(id, Direction::Older);
@@ -99,8 +126,12 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
         }
     }
     while let Some(event) = s.network.as_mut().and_then(|n| n.rx.try_recv().ok()) {
+        if matches!(event, Event::TypingTick) {
+            continue;
+        }
         changed = true;
         match event {
+            Event::TypingTick => {}
             Event::Status(status) => s.status = status,
             Event::Dispatch(name, data) => dispatch(s, &name, data),
             Event::History(channel, direction, result) => {
@@ -112,6 +143,7 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
                 s.sending = false;
                 match result {
                     Ok(m) => {
+                        s.store.typing.reset(&m.channel_id);
                         if s.finish_sent(m) {
                             tx.scroll_to_bottom("transcript");
                         }
@@ -136,6 +168,47 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn typing_dispatch_self_malformed_and_message_clear() {
+        let mut state = State::default();
+        dispatch(
+            &mut state,
+            "READY",
+            json!({"user":{"id":"1","username":"Self"}}),
+        );
+        dispatch(
+            &mut state,
+            "TYPING_START",
+            json!({"channel_id":"2","user_id":"1","timestamp":1}),
+        );
+        dispatch(&mut state, "TYPING_START", json!({"channel_id":false}));
+        assert_eq!(state.store.typing.label("2", Instant::now()), "");
+        dispatch(
+            &mut state,
+            "TYPING_START",
+            json!({"channel_id":"2","user_id":"3","timestamp":1,"member":{"nick":"Ada","user":{"id":"3","username":"ada"}}}),
+        );
+        assert_eq!(
+            state.store.typing.label("2", Instant::now()),
+            "Ada is typing…"
+        );
+        dispatch(
+            &mut state,
+            "MESSAGE_CREATE",
+            json!({"id":"10","channel_id":"2","author":{"id":"3","username":"ada"},"content":"hello","timestamp":"now"}),
+        );
+        assert_eq!(state.store.typing.label("2", Instant::now()), "");
+        dispatch(
+            &mut state,
+            "TYPING_START",
+            json!({"channel_id":"2","user_id":"3","timestamp":1}),
+        );
+        assert_eq!(
+            state.store.typing.label("2", Instant::now()),
+            "ada is typing…"
+        );
+    }
 
     #[test]
     fn ready_messages_partial_edit_and_deletion() {

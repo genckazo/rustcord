@@ -18,6 +18,7 @@ pub struct Window {
 }
 #[derive(Default)]
 pub struct Store {
+    pub typing: crate::typing::Typing,
     pub user: Option<User>,
     pub guilds: HashMap<String, Guild>,
     pub channels: HashMap<String, Channel>,
@@ -101,6 +102,7 @@ impl Store {
         }
     }
     pub fn remove_channel(&mut self, id: &str) {
+        self.typing.remove_channel(id);
         self.channels.remove(id);
         self.messages.remove(id);
         self.windows.remove(id);
