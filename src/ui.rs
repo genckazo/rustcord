@@ -208,6 +208,9 @@ impl State {
         } else {
             None
         };
+        if direction == Direction::Latest {
+            self.store.request_latest(&channel);
+        }
         if self.command(Command::History {
             channel: channel.clone(),
             cursor,

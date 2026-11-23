@@ -677,7 +677,7 @@ mod tests {
         s.store.history(
             "2",
             Direction::Latest,
-            vec![stale],
+            vec![stale.clone()],
             crate::store::HISTORY_LIMIT,
         );
         let ids: Vec<&str> = s.store.messages["2"]
@@ -685,5 +685,21 @@ mod tests {
             .map(|m| m.id.as_str())
             .collect();
         assert_eq!(ids, ["9001", "9002"]);
+        // A second refetch records the newest cached snowflake as its
+        // boundary; a cached message the reply omits (deleted remotely in
+        // flight) does not survive.
+        s.loading.remove("2");
+        s.history("2".into(), Direction::Latest);
+        s.store.history(
+            "2",
+            Direction::Latest,
+            vec![stale],
+            crate::store::HISTORY_LIMIT,
+        );
+        let ids: Vec<&str> = s.store.messages["2"]
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(ids, ["9001"]);
     }
 }
