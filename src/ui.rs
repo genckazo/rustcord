@@ -16,7 +16,7 @@ use crate::{
 use rune::{
     col, el, row, text, text_input,
     tok::{self, type_},
-    AppSpec, Cx, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, Waker,
+    Align, AppSpec, Cx, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, Waker,
 };
 use std::{
     cell::Cell,
@@ -465,7 +465,7 @@ fn login(s: &State) -> El {
             .child(button("remember", if s.remember { "[✓] Remember me in the OS keychain" } else { "[ ] Remember me in the OS keychain" }, s.remember, |s, _| s.remember = !s.remember))
             .child(button("connect", "Connect →", true, connect))
             .child(text("Third-party user-token clients violate Discord’s terms. Your account may be restricted or terminated.").font(type_::BODY).color(t.text_secondary).wrap().w_full()))
-        .child(text("No telemetry · No message or audio files · Links open in your browser").font(type_::BODY).color(t.text_secondary).wrap().w_full())
+        .child(text("No telemetry · No message or audio files · Links open in your browser").font(type_::BODY).color(t.text_secondary).wrap().w_full().align(Align::Center))
 }
 fn chat(s: &State) -> El {
     let t = tok::theme(true);
