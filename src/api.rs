@@ -83,18 +83,11 @@ impl Api {
         &self,
         channel: &str,
         before: Option<&str>,
+        after: Option<&str>,
+        limit: Option<usize>,
     ) -> Result<Vec<Message>, String> {
-        valid_id(channel)?;
-        if let Some(id) = before {
-            valid_id(id)?;
-        }
-        let suffix = before.map(|id| format!("&before={id}")).unwrap_or_default();
-        self.request(
-            Method::GET,
-            &format!("/channels/{channel}/messages?limit=50{suffix}"),
-            None,
-        )
-        .await
+        let path = messages_path(channel, before, after, limit)?;
+        self.request(Method::GET, &path, None).await
     }
     pub async fn send(&self, channel: &str, content: &str) -> Result<Message, String> {
         valid_id(channel)?;
@@ -145,6 +138,28 @@ fn dm_body(user: &str) -> Result<Value, String> {
     valid_id(user)?;
     Ok(json!({"recipients": [user]}))
 }
+fn messages_path(
+    channel: &str,
+    before: Option<&str>,
+    after: Option<&str>,
+    limit: Option<usize>,
+) -> Result<String, String> {
+    valid_id(channel)?;
+    if before.is_some() && after.is_some() {
+        return Err("Use before or after, not both".into());
+    }
+    let mut path = format!(
+        "/channels/{channel}/messages?limit={}",
+        limit.unwrap_or(crate::store::HISTORY_LIMIT).clamp(1, 100)
+    );
+    for (key, value) in [("before", before), ("after", after)] {
+        if let Some(id) = value {
+            valid_id(id)?;
+            path.push_str(&format!("&{key}={id}"));
+        }
+    }
+    Ok(path)
+}
 /// Upper bound on a Discord `retry_after` sleep: a pathological value must not
 /// stall the serialized REST worker for every queued call.
 const MAX_RETRY_DELAY_SECS: f64 = 60.0;
@@ -161,8 +176,31 @@ fn valid_id(id: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{retry_delay, valid_id, MAX_RETRY_DELAY_SECS};
+    use super::{messages_path, retry_delay, valid_id, MAX_RETRY_DELAY_SECS};
     use std::time::Duration;
+    #[test]
+    fn history_queries() {
+        assert_eq!(
+            messages_path("1", None, None, None).unwrap(),
+            "/channels/1/messages?limit=50"
+        );
+        assert_eq!(
+            messages_path("1", Some("2"), None, Some(0)).unwrap(),
+            "/channels/1/messages?limit=1&before=2"
+        );
+        assert_eq!(
+            messages_path("1", None, Some("2"), Some(101)).unwrap(),
+            "/channels/1/messages?limit=100&after=2"
+        );
+        assert_eq!(
+            messages_path("1", None, None, Some(25)).unwrap(),
+            "/channels/1/messages?limit=25"
+        );
+        assert!(messages_path("1", Some("2"), Some("3"), None).is_err());
+        assert!(messages_path("", None, None, None).is_err());
+        assert!(messages_path("1", Some(""), None, None).is_err());
+        assert!(messages_path("1", None, Some("2&limit=999"), None).is_err());
+    }
 
     #[test]
     fn create_dm_body() {

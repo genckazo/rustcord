@@ -3,6 +3,7 @@ use crate::{
     gateway,
     model::{Channel, Message},
     search::Query,
+    store::{Direction, HISTORY_LIMIT},
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -12,7 +13,8 @@ pub enum Command {
     Typing(String),
     History {
         channel: String,
-        before: Option<String>,
+        cursor: Option<String>,
+        direction: Direction,
     },
     Send {
         channel: String,
@@ -29,7 +31,7 @@ pub enum Event {
     TypingTick,
     Status(String),
     Dispatch(String, Value),
-    History(String, Result<Vec<Message>, String>),
+    History(String, Direction, Result<Vec<Message>, String>),
     Sent(Result<Message, String>),
     Channels(Result<Vec<Channel>, String>),
     Voice(crate::voice::Snapshot),
@@ -59,6 +61,21 @@ pub struct Network {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
 }
 impl Network {
+    #[cfg(test)]
+    pub fn mock() -> (Self, mpsc::Receiver<Command>) {
+        let (tx, commands) = mpsc::channel(64);
+        let (_, rx) = mpsc::channel(256);
+        let (voice, _) = mpsc::channel(16);
+        (
+            Self {
+                tx,
+                voice,
+                rx,
+                stop: None,
+            },
+            commands,
+        )
+    }
     pub fn start(token: Zeroizing<String>, waker: rune::Waker) -> Self {
         let (tx, mut commands) = mpsc::channel(64);
         let (events_tx, rx) = mpsc::channel(256);
@@ -108,9 +125,21 @@ impl Network {
                                 let _ = api.typing(&channel).await;
                                 continue;
                             }
-                            Command::History { channel, before } => {
-                                let result = api.messages(&channel, before.as_deref()).await;
-                                Event::History(channel, result)
+                            Command::History {
+                                channel,
+                                cursor,
+                                direction,
+                            } => {
+                                let before = (direction == Direction::Older)
+                                    .then_some(cursor.as_deref())
+                                    .flatten();
+                                let after = (direction == Direction::Newer)
+                                    .then_some(cursor.as_deref())
+                                    .flatten();
+                                let result = api
+                                    .messages(&channel, before, after, Some(HISTORY_LIMIT))
+                                    .await;
+                                Event::History(channel, direction, result)
                             }
                             Command::Send { channel, content } => {
                                 Event::Sent(api.send(&channel, &content).await)

@@ -1,7 +1,21 @@
 use crate::model::{Channel, Guild, Message, User, VoiceState};
 use std::collections::{HashMap, VecDeque};
 
-pub const MESSAGE_CAP: usize = 200;
+pub const MESSAGE_CAP: usize = 500;
+pub const HISTORY_LIMIT: usize = 50;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Latest,
+    Older,
+    Newer,
+}
+
+#[derive(Default)]
+pub struct Window {
+    pub has_newer: bool,
+    pub oldest_exhausted: bool,
+}
 /// Maximum number of channel transcripts held at once. Channels are evicted
 /// least-recently-used and refetched on demand when selected again.
 pub const CHANNEL_CAP: usize = 32;
@@ -13,6 +27,7 @@ pub struct Store {
     pub guilds: HashMap<String, Guild>,
     pub channels: HashMap<String, Channel>,
     pub messages: HashMap<String, VecDeque<Message>>,
+    pub windows: HashMap<String, Window>,
     pub voice_states: HashMap<(Option<String>, String), VoiceState>,
     /// LRU order of `messages` keys, least recent first.
     recency: VecDeque<String>,
@@ -20,6 +35,17 @@ pub struct Store {
     pinned: Option<String>,
 }
 impl Store {
+    pub fn can_page(&self, channel: &str, direction: Direction, loading: bool) -> bool {
+        !loading
+            && match direction {
+                Direction::Latest => true,
+                Direction::Older => !self
+                    .windows
+                    .get(channel)
+                    .is_some_and(|w| w.oldest_exhausted),
+                Direction::Newer => self.windows.get(channel).is_some_and(|w| w.has_newer),
+            }
+    }
     pub fn channel_label(&self, channel: &Channel) -> String {
         if channel.guild_id.is_some() {
             return channel.label();
@@ -152,13 +178,48 @@ impl Store {
                 continue;
             }
             self.messages.remove(&candidate);
+            self.windows.remove(&candidate);
             evicted = Some(candidate);
         }
         evicted
     }
     /// Returns the channel evicted while inserting, if any.
     pub fn insert(&mut self, message: Message) -> Option<String> {
+        if self
+            .windows
+            .get(&message.channel_id)
+            .is_some_and(|window| window.has_newer)
+        {
+            return None;
+        }
+        self.merge(message, Direction::Newer)
+    }
+    pub fn history(
+        &mut self,
+        channel: &str,
+        direction: Direction,
+        page: Vec<Message>,
+        limit: usize,
+    ) {
+        let short = page.len() < limit;
+        self.ensure(channel);
+        if direction == Direction::Latest {
+            self.messages.get_mut(channel).unwrap().clear();
+            self.windows.remove(channel);
+        }
+        let window = self.windows.entry(channel.to_owned()).or_default();
+        match direction {
+            Direction::Latest => window.oldest_exhausted = short,
+            Direction::Older => window.oldest_exhausted = short,
+            Direction::Newer => window.has_newer = !short,
+        }
+        for message in page {
+            self.merge(message, direction);
+        }
+    }
+    fn merge(&mut self, message: Message, direction: Direction) -> Option<String> {
         let evicted = self.ensure(&message.channel_id);
+        let window = self.windows.entry(message.channel_id.clone()).or_default();
         let messages = self.messages.get_mut(&message.channel_id).unwrap();
         if let Some(old) = messages.iter_mut().find(|m| m.id == message.id) {
             *old = message;
@@ -171,7 +232,13 @@ impl Store {
             .unwrap_or(messages.len());
         messages.insert(index, message);
         while messages.len() > MESSAGE_CAP {
-            messages.pop_front();
+            if direction == Direction::Older {
+                messages.pop_back();
+                window.has_newer = true;
+            } else {
+                messages.pop_front();
+                window.oldest_exhausted = false;
+            }
         }
         evicted
     }
@@ -179,6 +246,7 @@ impl Store {
         self.typing.remove_channel(id);
         self.channels.remove(id);
         self.messages.remove(id);
+        self.windows.remove(id);
         self.voice_states
             .retain(|_, state| state.channel_id.as_deref() != Some(id));
         if let Some(index) = self.recency.iter().position(|c| c == id) {
@@ -227,14 +295,14 @@ mod tests {
     #[test]
     fn eviction_order_and_duplicates() {
         let mut store = Store::default();
-        for id in (0..250).rev() {
+        for id in (0..550).rev() {
             store.insert(message(id));
         }
-        store.insert(message(249));
+        store.insert(message(549));
         let messages = &store.messages["1"];
-        assert_eq!(messages.len(), 200);
+        assert_eq!(messages.len(), MESSAGE_CAP);
         assert_eq!(messages.front().unwrap().id, "50");
-        assert_eq!(messages.back().unwrap().id, "249");
+        assert_eq!(messages.back().unwrap().id, "549");
         store.remove_channel("1");
         assert!(store.messages.is_empty());
     }
@@ -334,6 +402,84 @@ mod tests {
             bytes
         );
         assert_eq!(store.messages.len(), CHANNEL_CAP);
+    }
+    #[test]
+    fn history_windows_follow_channel_lru_eviction() {
+        let mut store = Store::default();
+        store.pin(Some("0".into()));
+        for _ in 0..3 {
+            store.history("0", Direction::Latest, vec![], HISTORY_LIMIT);
+        }
+        assert_eq!(store.recency.len(), 1);
+        for channel in 1..=CHANNEL_CAP {
+            store.history(
+                &channel.to_string(),
+                Direction::Latest,
+                vec![],
+                HISTORY_LIMIT,
+            );
+        }
+        assert!(store.messages.contains_key("0"));
+        assert!(!store.messages.contains_key("1"));
+        assert!(!store.windows.contains_key("1"));
+        assert_eq!(store.windows.len(), CHANNEL_CAP);
+        assert_eq!(store.recency.len(), CHANNEL_CAP);
+        assert!(store.can_page("1", Direction::Older, false));
+        store.remove_channel("0");
+        assert!(!store.windows.contains_key("0"));
+    }
+    #[test]
+    fn directional_pages_live_gap_and_reattach() {
+        let mut store = Store::default();
+        store.history(
+            "1",
+            Direction::Latest,
+            (100..600).rev().map(message).collect(),
+            HISTORY_LIMIT,
+        );
+        store.history(
+            "1",
+            Direction::Older,
+            (50..100).rev().map(message).collect(),
+            HISTORY_LIMIT,
+        );
+        assert_eq!(store.messages["1"].front().unwrap().id, "50");
+        assert_eq!(store.messages["1"].back().unwrap().id, "549");
+        assert!(store.windows["1"].has_newer);
+        store.insert(message(600));
+        assert_eq!(store.messages["1"].back().unwrap().id, "549");
+        store.history(
+            "1",
+            Direction::Newer,
+            (550..600).rev().map(message).collect(),
+            HISTORY_LIMIT,
+        );
+        assert_eq!(store.messages["1"].front().unwrap().id, "100");
+        assert_eq!(store.messages["1"].back().unwrap().id, "599");
+        assert!(store.windows["1"].has_newer);
+        store.history("1", Direction::Newer, vec![message(600)], HISTORY_LIMIT);
+        assert!(!store.windows["1"].has_newer);
+        store.insert(message(601));
+        assert_eq!(store.messages["1"].back().unwrap().id, "601");
+        assert!(!store.windows["1"].oldest_exhausted);
+    }
+    #[test]
+    fn exhaustion_empty_pages_reset_and_guards() {
+        let mut store = Store::default();
+        assert!(!store.can_page("1", Direction::Newer, false));
+        store.history("1", Direction::Latest, vec![message(10)], HISTORY_LIMIT);
+        assert!(!store.can_page("1", Direction::Older, false));
+        assert!(!store.can_page("1", Direction::Latest, true));
+        store.windows.get_mut("1").unwrap().has_newer = true;
+        store.history("1", Direction::Newer, vec![], HISTORY_LIMIT);
+        assert!(!store.can_page("1", Direction::Newer, false));
+        store.windows.get_mut("1").unwrap().has_newer = true;
+        store.history("1", Direction::Latest, vec![], HISTORY_LIMIT);
+        assert!(store.messages["1"].is_empty());
+        assert!(!store.windows["1"].has_newer);
+        assert!(store.windows["1"].oldest_exhausted);
+        store.history("1", Direction::Older, vec![], HISTORY_LIMIT);
+        assert!(store.windows["1"].oldest_exhausted);
     }
     #[test]
     fn empty_and_channel_ordering() {

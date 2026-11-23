@@ -11,7 +11,7 @@ use crate::{
     model::{Channel, Guild, Message, User},
     network::{Command, Network},
     search::{Query, Scope, Search},
-    store::Store,
+    store::{Direction, Store, HISTORY_LIMIT},
 };
 use rune::{
     col, el, row, text, text_input,
@@ -24,6 +24,22 @@ use std::{
     rc::Rc,
 };
 use zeroize::Zeroizing;
+
+const SIDEBAR_PAGE: usize = 50;
+
+fn sidebar_channels<'a>(
+    channels: &[&'a Channel],
+    limit: usize,
+    selected: Option<&str>,
+) -> Vec<&'a str> {
+    channels
+        .iter()
+        .filter(|c| c.is_text() || c.kind == 2)
+        .enumerate()
+        .filter(|(index, c)| *index < limit || Some(c.id.as_str()) == selected)
+        .map(|(_, c)| c.id.as_str())
+        .collect()
+}
 
 pub struct State {
     token: TextEdit,
@@ -38,10 +54,12 @@ pub struct State {
     guild: Option<String>,
     channel: Option<String>,
     loading: HashSet<String>,
-    exhausted: HashSet<String>,
+    pending_present: HashSet<String>,
+    sidebar_limit: usize,
     demo: bool,
     sending: bool,
     scroll_top: Rc<Cell<bool>>,
+    scroll_bottom: Rc<Cell<bool>>,
     voice: crate::voice::Snapshot,
     search_draft: TextEdit,
     search_here: bool,
@@ -65,10 +83,12 @@ impl Default for State {
             guild: None,
             channel: None,
             loading: HashSet::new(),
-            exhausted: HashSet::new(),
+            pending_present: HashSet::new(),
+            sidebar_limit: SIDEBAR_PAGE,
             demo: false,
             sending: false,
             scroll_top: Rc::new(Cell::new(false)),
+            scroll_bottom: Rc::new(Cell::new(false)),
             voice: crate::voice::Snapshot::default(),
             search_draft: TextEdit::default(),
             search_here: false,
@@ -80,6 +100,51 @@ impl Default for State {
     }
 }
 impl State {
+    fn finish_sent(&mut self, message: Message) -> bool {
+        self.sending = false;
+        self.draft.clear();
+        if self
+            .store
+            .windows
+            .get(&message.channel_id)
+            .is_some_and(|w| w.has_newer)
+        {
+            self.pending_present.insert(message.channel_id.clone());
+            self.load_pending_present(&message.channel_id);
+            false
+        } else {
+            self.store.insert(message);
+            true
+        }
+    }
+    fn load_pending_present(&mut self, channel: &str) {
+        if !self.loading.contains(channel) && self.pending_present.remove(channel) {
+            self.history(channel.to_owned(), Direction::Latest);
+        }
+    }
+    fn finish_history(
+        &mut self,
+        channel: &str,
+        direction: Direction,
+        result: Result<Vec<Message>, String>,
+    ) -> bool {
+        self.loading.remove(channel);
+        if self.pending_present.contains(channel) {
+            self.load_pending_present(channel);
+            return false;
+        }
+        match result {
+            Ok(messages) => {
+                self.store
+                    .history(channel, direction, messages, HISTORY_LIMIT);
+                direction == Direction::Latest && self.channel.as_deref() == Some(channel)
+            }
+            Err(error) => {
+                self.error = error;
+                false
+            }
+        }
+    }
     fn voice_command(&mut self, command: crate::voice::Command) {
         if self.demo {
             demo_actions::voice(self, command);
@@ -99,6 +164,9 @@ impl State {
         }
         self.store.users.insert(user.id.clone(), user.clone());
         if let Some(id) = self.store.dm_for(&user.id) {
+            if self.guild.is_some() {
+                self.sidebar_limit = SIDEBAR_PAGE;
+            }
             self.guild = None;
             self.select(id, tx);
         } else if !self.demo {
@@ -117,25 +185,33 @@ impl State {
             false
         }
     }
-    fn history(&mut self, channel: String, older: bool) {
+    fn history(&mut self, channel: String, direction: Direction) {
         if self.demo
-            || self.loading.contains(&channel)
-            || (older && self.exhausted.contains(&channel))
+            || !self
+                .store
+                .can_page(&channel, direction, self.loading.contains(&channel))
         {
             return;
         }
-        let before = if older {
+        let cursor = if direction != Direction::Latest {
             self.store
                 .messages
                 .get(&channel)
-                .and_then(|ms| ms.front())
+                .and_then(|ms| {
+                    if direction == Direction::Older {
+                        ms.front()
+                    } else {
+                        ms.back()
+                    }
+                })
                 .map(|m| m.id.clone())
         } else {
             None
         };
         if self.command(Command::History {
             channel: channel.clone(),
-            before,
+            cursor,
+            direction,
         }) {
             self.loading.insert(channel);
         }
@@ -185,6 +261,8 @@ impl State {
         self.search_draft.clear();
     }
     fn select(&mut self, channel: String, tx: &mut Tx) {
+        self.scroll_top.set(false);
+        self.scroll_bottom.set(false);
         if self.guild.is_none() && self.channel.as_ref() != Some(&channel) {
             self.reset_search();
         } else {
@@ -205,7 +283,7 @@ impl State {
             self.draft.clear();
         }
         if !self.store.messages.contains_key(&channel) {
-            self.history(channel, false);
+            self.history(channel, Direction::Latest);
         }
         tx.scroll_to_bottom("transcript");
     }
@@ -242,7 +320,8 @@ fn logout(s: &mut State, _: &mut Tx) {
     s.draft.clear();
     s.drafts.clear();
     s.loading.clear();
-    s.exhausted.clear();
+    s.pending_present.clear();
+    s.sidebar_limit = SIDEBAR_PAGE;
     s.sending = false;
     s.demo = false;
     s.reset_search();
@@ -390,6 +469,7 @@ fn chat(s: &State) -> El {
             |s, _| {
                 s.guild = None;
                 s.channel = None;
+                s.sidebar_limit = SIDEBAR_PAGE;
                 s.reset_search();
                 s.store.pin(None);
             },
@@ -406,6 +486,7 @@ fn chat(s: &State) -> El {
             move |s, _| {
                 s.guild = Some(id.clone());
                 s.channel = None;
+                s.sidebar_limit = SIDEBAR_PAGE;
                 s.reset_search();
                 s.store.pin(None);
                 if s.store.channels_for(Some(&id)).is_empty() {
@@ -424,6 +505,7 @@ fn chat(s: &State) -> El {
             .child(list),
     );
     let channels = s.store.channels_for(s.guild.as_deref());
+    let visible = sidebar_channels(&channels, s.sidebar_limit, s.channel.as_deref());
     let mut channel_list = col().w_full().gap(6.0);
     let channel_button = |c: &Channel| {
         let id = c.id.clone();
@@ -466,7 +548,13 @@ fn chat(s: &State) -> El {
     };
     for c in channels
         .iter()
-        .filter(|c| (c.is_text() || c.kind == 2) && c.parent_id.is_none())
+        .filter(|c| {
+            (c.is_text() || c.kind == 2)
+                && !channels.iter().any(|category| {
+                    category.kind == 4 && c.parent_id.as_ref() == Some(&category.id)
+                })
+        })
+        .filter(|c| visible.contains(&c.id.as_str()))
     {
         channel_list = channel_list.child(channel_button(c));
         if c.kind == 2 {
@@ -474,6 +562,12 @@ fn chat(s: &State) -> El {
         }
     }
     for category in channels.iter().filter(|c| c.kind == 4) {
+        if !channels
+            .iter()
+            .any(|c| c.parent_id.as_ref() == Some(&category.id) && visible.contains(&c.id.as_str()))
+        {
+            continue;
+        }
         channel_list = channel_list.child(
             text(category.label().to_uppercase())
                 .font(type_::BODY)
@@ -483,12 +577,23 @@ fn chat(s: &State) -> El {
         for c in channels
             .iter()
             .filter(|c| (c.is_text() || c.kind == 2) && c.parent_id.as_ref() == Some(&category.id))
+            .filter(|c| visible.contains(&c.id.as_str()))
         {
             channel_list = channel_list.child(channel_button(c));
             if c.kind == 2 {
                 channel_list = channel_list.child(voice_panel::members(s, &c.id));
             }
         }
+    }
+    if channels
+        .iter()
+        .filter(|c| c.is_text() || c.kind == 2)
+        .count()
+        > visible.len()
+    {
+        channel_list = channel_list.child(button("more-channels", "Show more", false, |s, _| {
+            s.sidebar_limit = s.sidebar_limit.saturating_add(SIDEBAR_PAGE);
+        }));
     }
     let channels = col()
         .w(220.0)
@@ -551,10 +656,15 @@ fn chat(s: &State) -> El {
         let mut messages = col().w_full().gap(18.0).py(12.0);
         if s.loading.contains(channel) {
             messages = messages.child(label("Loading messages…"));
-        } else if !s.exhausted.contains(channel) {
+        } else if !s
+            .store
+            .windows
+            .get(channel)
+            .is_some_and(|w| w.oldest_exhausted)
+        {
             messages = messages.child(button("older", "Load older messages", false, |s, _| {
                 if let Some(id) = s.channel.clone() {
-                    s.history(id, true);
+                    s.history(id, Direction::Older);
                 }
             }));
         }
@@ -597,7 +707,23 @@ fn chat(s: &State) -> El {
                 messages = messages.child(item);
             }
         }
+        let detached = s.store.windows.get(channel).is_some_and(|w| w.has_newer);
+        if detached {
+            if !s.loading.contains(channel) {
+                messages = messages.child(button("newer", "Load newer messages", false, |s, _| {
+                    if let Some(id) = s.channel.clone() {
+                        s.history(id, Direction::Newer);
+                    }
+                }));
+            }
+            main = main.child(button("present", "Jump to present", false, |s, _| {
+                if let Some(id) = s.channel.clone() {
+                    s.history(id, Direction::Latest);
+                }
+            }));
+        }
         let top = s.scroll_top.clone();
+        let bottom = s.scroll_bottom.clone();
         let up = s.scrolled_up.clone();
         let up_changed = s.scrolled_up_changed.clone();
         let waker = s.waker.clone();
@@ -607,10 +733,18 @@ fn chat(s: &State) -> El {
                 .grow(1.0)
                 .min_h(0.0)
                 .w_full()
-                .scroll(ScrollSpec { stick_bottom: true })
+                .scroll(ScrollSpec {
+                    stick_bottom: !detached,
+                })
                 .on_scroll_offset(move |pos| {
                     if pos.offset[1] < 1.0 && pos.max[1] > 1.0 {
                         top.set(true);
+                        if let Some(waker) = &waker {
+                            waker();
+                        }
+                    }
+                    if detached && pos.max[1] > 1.0 && pos.offset[1] >= pos.max[1] - 1.0 {
+                        bottom.set(true);
                         if let Some(waker) = &waker {
                             waker();
                         }
@@ -959,7 +1093,11 @@ fn demo(s: &mut State) {
     }))
     .unwrap();
     s.store.insert(media);
-    s.exhausted.insert("102".into());
+    s.store
+        .windows
+        .entry("102".into())
+        .or_default()
+        .oldest_exhausted = true;
 }
 fn demo_search(s: &mut State) {
     demo(s);
@@ -1006,6 +1144,129 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn detached_send_reloads_latest_and_scrolls_when_it_arrives() {
+        for loading in [false, true] {
+            let mut state = State::default();
+            let (network, mut commands) = Network::mock();
+            state.network = Some(network);
+            state.channel = Some("1".into());
+            state.store.windows.entry("1".into()).or_default().has_newer = true;
+            state.draft.replace_text("sent");
+            state.sending = true;
+            if loading {
+                state.loading.insert("1".into());
+            }
+            let message = Message {
+                id: "100".into(),
+                channel_id: "1".into(),
+                author: User::default(),
+                content: "sent".into(),
+                timestamp: "now".into(),
+                embeds: Vec::new(),
+                attachments: Vec::new(),
+            };
+            assert!(!state.finish_sent(message.clone()));
+            assert!(!state.sending);
+            assert!(state.draft.text.is_empty());
+            assert!(!state.store.messages.contains_key("1"));
+            if loading {
+                assert!(commands.try_recv().is_err());
+                assert!(!state.finish_history("1", Direction::Older, Ok(vec![])));
+            }
+            assert!(matches!(commands.try_recv().unwrap(), Command::History {
+                channel, direction: Direction::Latest, cursor: None
+            } if channel == "1"));
+            assert!(state.loading.contains("1"));
+            assert!(state.finish_history("1", Direction::Latest, Ok(vec![message.clone()])));
+            assert!(!state.store.windows["1"].has_newer);
+            assert_eq!(state.store.messages["1"][0].id, "100");
+            assert!(state.finish_sent(message));
+            assert!(commands.try_recv().is_err());
+            assert_eq!(state.store.messages["1"].len(), 1);
+        }
+    }
+
+    #[test]
+    fn sidebar_limits_and_keeps_selection() {
+        let channels: Vec<Channel> = (0..120)
+            .map(|id| {
+                serde_json::from_value(serde_json::json!({"id":id.to_string(),"type":0})).unwrap()
+            })
+            .collect();
+        let refs: Vec<_> = channels.iter().collect();
+        assert_eq!(sidebar_channels(&[], SIDEBAR_PAGE, None).len(), 0);
+        assert_eq!(sidebar_channels(&refs, SIDEBAR_PAGE, None).len(), 50);
+        let visible = sidebar_channels(&refs, SIDEBAR_PAGE, Some("110"));
+        assert_eq!(visible.len(), 51);
+        assert!(visible.contains(&"110"));
+        assert_eq!(sidebar_channels(&refs, 100, Some("10")).len(), 100);
+        assert_eq!(sidebar_channels(&refs, 150, None).len(), 120);
+    }
+
+    #[test]
+    fn dm_sidebar_batches_follow_activity_and_keep_selected_dm() {
+        let mut store = Store::default();
+        for id in 1..=120 {
+            let channel: Channel = serde_json::from_value(serde_json::json!({
+                "id": id.to_string(), "type": if id % 2 == 0 { 3 } else { 1 },
+                "last_message_id": id.to_string(), "recipient_ids": ["999"]
+            }))
+            .unwrap();
+            store.channels.insert(channel.id.clone(), channel);
+        }
+        let channels = store.channels_for(None);
+        let visible = sidebar_channels(&channels, SIDEBAR_PAGE, Some("1"));
+        assert_eq!(visible.len(), SIDEBAR_PAGE + 1);
+        assert_eq!(visible[0], "120");
+        assert_eq!(visible[49], "71");
+        assert_eq!(visible[50], "1");
+        assert_eq!(sidebar_channels(&channels, 100, None).len(), 100);
+        assert_eq!(sidebar_channels(&channels, 150, None).len(), 120);
+        let message: Message = serde_json::from_value(serde_json::json!({
+            "id":"121", "channel_id":"1", "author":{"id":"999"}, "timestamp":"now"
+        }))
+        .unwrap();
+        store.activity(&message);
+        let channels = store.channels_for(None);
+        let visible = sidebar_channels(&channels, SIDEBAR_PAGE, Some("1"));
+        assert_eq!(visible.len(), SIDEBAR_PAGE);
+        assert_eq!(visible[0], "1");
+    }
+
+    #[test]
+    fn sidebar_categories_do_not_consume_budget_and_dms_are_supported() {
+        let channels: Vec<Channel> = [
+            serde_json::json!({"id":"1","type":4}),
+            serde_json::json!({"id":"2","type":0,"parent_id":"1"}),
+            serde_json::json!({"id":"3","type":1}),
+            serde_json::json!({"id":"4","type":2,"parent_id":"1"}),
+        ]
+        .into_iter()
+        .map(|value| serde_json::from_value(value).unwrap())
+        .collect();
+        let refs: Vec<_> = channels.iter().collect();
+        assert_eq!(sidebar_channels(&refs, 1, None), ["2"]);
+        assert_eq!(sidebar_channels(&refs, 1, Some("3")), ["2", "3"]);
+        assert_eq!(sidebar_channels(&refs, 1, Some("4")), ["2", "4"]);
+        assert_eq!(sidebar_channels(&refs, 3, None), ["2", "3", "4"]);
+    }
+
+    #[test]
+    fn history_failure_preserves_window_and_allows_retry() {
+        let mut state = State::default();
+        state.store.windows.entry("1".into()).or_default().has_newer = true;
+        state.loading.insert("1".into());
+        assert!(!state.finish_history("1", Direction::Newer, Err("network failed".into())));
+        assert_eq!(state.error, "network failed");
+        assert!(state
+            .store
+            .can_page("1", Direction::Newer, state.loading.contains("1")));
+        state.channel = Some("1".into());
+        assert!(state.finish_history("1", Direction::Latest, Ok(vec![])));
+        assert!(!state.store.windows["1"].has_newer);
+        assert!(state.store.windows["1"].oldest_exhausted);
+    }
     #[test]
     fn demo_search_scopes_and_invalid_queries() {
         let mut s = State::default();

@@ -4,7 +4,7 @@ use crate::{
     network::Event,
     notifications,
     search::Query,
-    store::Store,
+    store::{Direction, Store},
 };
 use rune::Tx;
 use serde::Deserialize;
@@ -16,7 +16,8 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
         "READY" => {
             s.store = Store::default();
             s.loading.clear();
-            s.exhausted.clear();
+            s.pending_present.clear();
+            s.sidebar_limit = super::SIDEBAR_PAGE;
             s.store.user = serde_json::from_value::<User>(data["user"].clone()).ok();
             if let Some(users) = data["users"].as_array() {
                 for user in users {
@@ -109,9 +110,7 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
                 }
                 s.store.activity(&m);
                 s.store.typing.clear(&m.channel_id, &m.author.id);
-                if let Some(evicted) = s.store.insert(m) {
-                    s.exhausted.remove(&evicted);
-                }
+                s.store.insert(m);
             }
         }
         "CHANNEL_RECIPIENT_ADD" | "CHANNEL_RECIPIENT_REMOVE" => {
@@ -186,7 +185,13 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
     let mut changed = s.store.typing.expire(now);
     if s.scroll_top.replace(false) {
         if let Some(id) = s.channel.clone() {
-            s.history(id, true);
+            s.history(id, Direction::Older);
+            changed = true;
+        }
+    }
+    if s.scroll_bottom.replace(false) {
+        if let Some(id) = s.channel.clone() {
+            s.history(id, Direction::Newer);
             changed = true;
         }
     }
@@ -203,27 +208,9 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
             Event::TypingTick => {}
             Event::Status(status) => s.status = status,
             Event::Dispatch(name, data) => dispatch(s, &name, data),
-            Event::History(channel, result) => {
-                s.loading.remove(&channel);
-                match result {
-                    Ok(messages) => {
-                        let initial = !s.store.messages.contains_key(&channel);
-                        if messages.len() < 50 {
-                            s.exhausted.insert(channel.clone());
-                        }
-                        if let Some(evicted) = s.store.ensure(&channel) {
-                            s.exhausted.remove(&evicted);
-                        }
-                        for m in messages {
-                            if let Some(evicted) = s.store.insert(m) {
-                                s.exhausted.remove(&evicted);
-                            }
-                        }
-                        if initial && s.channel.as_ref() == Some(&channel) {
-                            tx.scroll_to_bottom("transcript");
-                        }
-                    }
-                    Err(error) => s.error = error,
+            Event::History(channel, direction, result) => {
+                if s.finish_history(&channel, direction, result) {
+                    tx.scroll_to_bottom("transcript");
                 }
             }
             Event::Sent(result) => {
@@ -233,11 +220,9 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
                         s.store.activity(&m);
                         s.store.typing.reset(&m.channel_id);
                         s.drafts.remove(&m.channel_id);
-                        if let Some(evicted) = s.store.insert(m) {
-                            s.exhausted.remove(&evicted);
+                        if s.finish_sent(m) {
+                            tx.scroll_to_bottom("transcript");
                         }
-                        s.draft.clear();
-                        tx.scroll_to_bottom("transcript");
                     }
                     Err(error) => s.error = error,
                 }
@@ -265,6 +250,9 @@ fn opened_dm(s: &mut State, result: Result<Channel, String>, tx: &mut Tx) {
         Ok(c) => {
             let id = c.id.clone();
             s.store.channels.insert(id.clone(), c);
+            if s.guild.is_some() {
+                s.sidebar_limit = super::SIDEBAR_PAGE;
+            }
             s.guild = None;
             s.select(id, tx);
         }
