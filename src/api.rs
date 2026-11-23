@@ -129,6 +129,14 @@ impl Api {
         self.request(Method::POST, &format!("/channels/{channel}/typing"), None)
             .await
     }
+    pub async fn open_dm(&self, user: &str) -> Result<Channel, String> {
+        self.request(Method::POST, "/users/@me/channels", Some(dm_body(user)?))
+            .await
+    }
+}
+fn dm_body(user: &str) -> Result<Value, String> {
+    valid_id(user)?;
+    Ok(json!({"recipients": [user]}))
 }
 fn messages_path(
     channel: &str,
@@ -185,6 +193,16 @@ mod tests {
         assert!(messages_path("", None, None, None).is_err());
         assert!(messages_path("1", Some(""), None, None).is_err());
         assert!(messages_path("1", None, Some("2&limit=999"), None).is_err());
+    }
+
+    #[test]
+    fn create_dm_body() {
+        assert_eq!(
+            super::dm_body("123").unwrap(),
+            serde_json::json!({"recipients":["123"]})
+        );
+        assert!(super::dm_body("").is_err());
+        assert!(super::dm_body("../users").is_err());
     }
     #[test]
     fn ids_cannot_escape_discord_routes() {

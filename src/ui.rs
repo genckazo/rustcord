@@ -129,6 +129,21 @@ impl State {
             }
         }
     }
+    fn open_dm(&mut self, user: User, tx: &mut Tx) {
+        if self.store.user.as_ref().is_some_and(|me| me.id == user.id) {
+            return;
+        }
+        self.store.users.insert(user.id.clone(), user.clone());
+        if let Some(id) = self.store.dm_for(&user.id) {
+            if self.guild.is_some() {
+                self.sidebar_limit = SIDEBAR_PAGE;
+            }
+            self.guild = None;
+            self.select(id, tx);
+        } else if !self.demo {
+            self.command(Command::OpenDm(user.id));
+        }
+    }
     fn command(&mut self, command: Command) -> bool {
         if self
             .network
@@ -440,7 +455,19 @@ fn chat(s: &State) -> El {
         let id = c.id.clone();
         button(
             format!("channel-{id}"),
-            format!("# {}", c.label()),
+            format!(
+                "{} {}",
+                if c.guild_id.is_none() {
+                    if c.kind == 3 {
+                        "@@"
+                    } else {
+                        "@"
+                    }
+                } else {
+                    "#"
+                },
+                s.store.channel_label(c)
+            ),
             s.channel.as_ref() == Some(&id),
             move |s, tx| s.select(id.clone(), tx),
         )
@@ -536,6 +563,7 @@ fn chat(s: &State) -> El {
         }
         if let Some(items) = s.store.messages.get(channel) {
             for m in items {
+                let author = m.author.clone();
                 let mut item = col()
                     .key(format!("message-{}", m.id))
                     .w_full()
@@ -546,7 +574,13 @@ fn chat(s: &State) -> El {
                             .child(
                                 text(m.author.name())
                                     .font(type_::LABEL)
-                                    .color(tok::accent(0, true)),
+                                    .color(tok::accent(0, true))
+                                    .key(format!("author-{}", m.id))
+                                    .role("button")
+                                    .focusable(true)
+                                    .on_press_tx(move |s: &mut State, tx| {
+                                        s.open_dm(author.clone(), tx)
+                                    }),
                             )
                             .child(
                                 text(time::format_timestamp(&m.timestamp))
@@ -666,7 +700,7 @@ fn header(s: &State) -> El {
             .store
             .channels
             .get(channel)
-            .map(|c| c.label())
+            .map(|c| s.store.channel_label(c))
             .unwrap_or_default(),
         (None, Some(guild)) => s
             .store
@@ -724,7 +758,7 @@ fn results(s: &State, search: &Search) -> El {
             .store
             .channels
             .get(&m.channel_id)
-            .map(|c| c.label())
+            .map(|c| s.store.channel_label(c))
             .unwrap_or_else(|| "unknown channel".into());
         let id = m.channel_id.clone();
         list = list.child(
@@ -863,28 +897,39 @@ fn demo(s: &mut State) {
     s.channel = Some("102".into());
     let guild: Guild = serde_json::from_value(serde_json::json!({"id":"100","name":"Rust community","channels":[{"id":"101","type":4,"name":"Community","position":0},{"id":"102","type":0,"name":"general","parent_id":"101","position":1},{"id":"103","type":0,"name":"projects","parent_id":"101","position":2}]})).unwrap();
     s.store.guild(guild);
-    let dm: Channel = serde_json::from_value(
-        serde_json::json!({"id":"200","type":1,"recipients":[{"id":"3","username":"River"}]}),
-    )
-    .unwrap();
-    s.store.channels.insert(dm.id.clone(), dm);
+    s.store.user = Some(User {
+        id: "1".into(),
+        username: "you".into(),
+        global_name: Some("You".into()),
+    });
+    for dm in [
+        serde_json::json!({"id":"200","type":1,"last_message_id":"50","recipients":[{"id":"3","username":"River"}]}),
+        serde_json::json!({"id":"201","type":1,"last_message_id":"80","recipients":[{"id":"4","username":"Kai"}]}),
+        serde_json::json!({"id":"202","type":3,"last_message_id":"60","recipients":[{"id":"2","username":"Ada"},{"id":"3","username":"River"}]}),
+    ] {
+        let dm: Channel = serde_json::from_value(dm).unwrap();
+        s.store.channels.insert(dm.id.clone(), dm);
+    }
     let now = jiff::Timestamp::now();
-    for (i, name, content, timestamp) in [
+    for (i, author, name, content, timestamp) in [
         (
             1,
+            "2",
             "Ada",
             "Welcome to Rustcord. A little less noise, a little more conversation.",
             (now - jiff::Span::new().hours(49)).to_string(),
         ),
         (
             2,
+            "3",
             "River",
             "Text chat is here. Messages stay in memory, not on disk.",
             (now - jiff::Span::new().minutes(4)).to_string(),
         ),
         (
             3,
-            "Ada",
+            "1",
+            "You",
             "The gateway and REST client run off the UI thread. Voice can join later.",
             now.to_string(),
         ),
@@ -893,7 +938,7 @@ fn demo(s: &mut State) {
             id: i.to_string(),
             channel_id: "102".into(),
             author: User {
-                id: i.to_string(),
+                id: author.into(),
                 username: name.into(),
                 global_name: None,
             },
@@ -951,7 +996,15 @@ pub fn run() {
             }
         }),
         poll: Some(events::poll),
-        scenes: &[("main", demo), ("search", demo_search)],
+        scenes: &[
+            ("main", demo),
+            ("search", demo_search),
+            ("dms", |s| {
+                demo(s);
+                s.guild = None;
+                s.channel = Some("200".into());
+            }),
+        ],
         min_size: Some((800.0, 540.0)),
         ..AppSpec::new("Rustcord", (1120.0, 760.0), State::default, view)
     });
@@ -1019,6 +1072,36 @@ mod tests {
         assert!(visible.contains(&"110"));
         assert_eq!(sidebar_channels(&refs, 100, Some("10")).len(), 100);
         assert_eq!(sidebar_channels(&refs, 150, None).len(), 120);
+    }
+
+    #[test]
+    fn dm_sidebar_batches_follow_activity_and_keep_selected_dm() {
+        let mut store = Store::default();
+        for id in 1..=120 {
+            let channel: Channel = serde_json::from_value(serde_json::json!({
+                "id": id.to_string(), "type": if id % 2 == 0 { 3 } else { 1 },
+                "last_message_id": id.to_string(), "recipient_ids": ["999"]
+            }))
+            .unwrap();
+            store.channels.insert(channel.id.clone(), channel);
+        }
+        let channels = store.channels_for(None);
+        let visible = sidebar_channels(&channels, SIDEBAR_PAGE, Some("1"));
+        assert_eq!(visible.len(), SIDEBAR_PAGE + 1);
+        assert_eq!(visible[0], "120");
+        assert_eq!(visible[49], "71");
+        assert_eq!(visible[50], "1");
+        assert_eq!(sidebar_channels(&channels, 100, None).len(), 100);
+        assert_eq!(sidebar_channels(&channels, 150, None).len(), 120);
+        let message: Message = serde_json::from_value(serde_json::json!({
+            "id":"121", "channel_id":"1", "author":{"id":"999"}, "timestamp":"now"
+        }))
+        .unwrap();
+        store.activity(&message);
+        let channels = store.channels_for(None);
+        let visible = sidebar_channels(&channels, SIDEBAR_PAGE, Some("1"));
+        assert_eq!(visible.len(), SIDEBAR_PAGE);
+        assert_eq!(visible[0], "1");
     }
 
     #[test]

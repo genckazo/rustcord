@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-rune = { git = "https://github.com/anomalyco/rune", rev = "b7a08d6aba94dc19bba2170c460b5d9841eec11b", features = ["tooling"] }
+rune = { git = "https://github.com/anomalyco/rune", rev = "b7a08d6aba94dc19bba2170c460b5d9841eec11b", default-features = false, features = ["accessibility", "dbus", "embedded-fonts", "metal-backend", "ogg-audio", "tooling"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
