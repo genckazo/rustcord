@@ -2,18 +2,23 @@
 name = "rustcord"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [dependencies]
 rune = { git = "https://github.com/anomalyco/rune", rev = "b7a08d6aba94dc19bba2170c460b5d9841eec11b", default-features = false, features = ["accessibility", "dbus", "embedded-fonts", "metal-backend", "ogg-audio", "tooling"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures-util = { version = "0.3", features = ["sink"] }
 keyring = "4.2"
 rand = "0.10"
 zeroize = "1"
+jiff = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "b7a08d6aba94dc19bba2170c460b5d9841eec11b" }
 
 [profile.release]
 lto = "thin"

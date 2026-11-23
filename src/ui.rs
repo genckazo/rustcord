@@ -1,4 +1,6 @@
 mod events;
+mod message_media;
+mod time;
 
 use crate::{
     auth,
@@ -153,6 +155,21 @@ fn send(s: &mut State, _: &mut Tx) {
         });
     }
 }
+fn send_typing(s: &mut State, _: &mut Tx) {
+    if s.demo || s.sending {
+        return;
+    }
+    let now = std::time::Instant::now();
+    if let Some(channel) = s.channel.clone() {
+        if s.store.typing.can_send(&channel, &s.draft.text, now)
+            && s.network
+                .as_ref()
+                .is_some_and(|n| n.tx.try_send(Command::Typing(channel.clone())).is_ok())
+        {
+            s.store.typing.sent(channel, now);
+        }
+    }
+}
 fn label(value: impl Into<String>) -> El {
     text(value.into())
         .font(type_::BODY)
@@ -202,7 +219,7 @@ fn login(s: &State) -> El {
             .child(button("remember", if s.remember { "[✓] Remember me in the OS keychain" } else { "[ ] Remember me in the OS keychain" }, s.remember, |s, _| s.remember = !s.remember))
             .child(button("connect", "Connect →", true, connect))
             .child(text("Third-party user-token clients violate Discord’s terms. Your account may be restricted or terminated.").font(type_::BODY).color(t.text_secondary).wrap().w_full()))
-        .child(text("No telemetry · No message files · Text chat only").font(type_::BODY).color(t.text_secondary))
+        .child(text("No telemetry · No message cache · Files open in your browser").font(type_::BODY).color(t.text_secondary))
 }
 fn chat(s: &State) -> El {
     let t = tok::theme(true);
@@ -325,25 +342,34 @@ fn chat(s: &State) -> El {
         }
         if let Some(items) = s.store.messages.get(channel) {
             for m in items {
-                messages = messages.child(
-                    col()
-                        .key(format!("message-{}", m.id))
-                        .w_full()
-                        .gap(6.0)
-                        .child(
-                            row()
-                                .gap(12.0)
-                                .child(
-                                    text(m.author.name())
-                                        .font(type_::LABEL)
-                                        .color(tok::accent(0, true)),
-                                )
-                                .child(
-                                    text(&m.timestamp).font(type_::BODY).color(t.text_secondary),
-                                ),
-                        )
-                        .child(label(&m.content).wrap_anywhere().w_full()),
-                );
+                let mut item = col()
+                    .key(format!("message-{}", m.id))
+                    .w_full()
+                    .gap(6.0)
+                    .child(
+                        row()
+                            .gap(12.0)
+                            .child(
+                                text(m.author.name())
+                                    .font(type_::LABEL)
+                                    .color(tok::accent(0, true)),
+                            )
+                            .child(
+                                text(time::format_timestamp(&m.timestamp))
+                                    .font(type_::BODY)
+                                    .color(t.text_secondary),
+                            ),
+                    );
+                if !m.content.is_empty() {
+                    item = item.child(label(&m.content).wrap_anywhere().w_full());
+                }
+                for (index, embed) in m.embeds.iter().enumerate() {
+                    item = item.child(message_media::embed_card(index, embed));
+                }
+                for attachment in &m.attachments {
+                    item = item.child(message_media::attachment_card(attachment));
+                }
+                messages = messages.child(item);
             }
         }
         let top = s.scroll_top.clone();
@@ -365,6 +391,10 @@ fn chat(s: &State) -> El {
                 })
                 .child(messages),
         );
+        let typing = s.store.typing.label(channel, std::time::Instant::now());
+        if !typing.is_empty() {
+            main = main.child(text(typing).font(type_::BODY).color(t.text_secondary));
+        }
         main = main.child(
             row()
                 .gap(8.0)
@@ -381,6 +411,7 @@ fn chat(s: &State) -> El {
                         .color(t.text)
                         .placeholder("Write a message…", t.text_secondary)
                         .on_edit(|s: &mut State| &mut s.draft)
+                        .on_input_change(send_typing)
                         .on_submit(send),
                 )
                 .child(el().w(90.0).child(button(
@@ -459,21 +490,25 @@ fn demo(s: &mut State) {
     )
     .unwrap();
     s.store.channels.insert(dm.id.clone(), dm);
-    for (i, name, content) in [
+    let now = jiff::Timestamp::now();
+    for (i, name, content, timestamp) in [
         (
             1,
             "Ada",
             "Welcome to Rustcord. A little less noise, a little more conversation.",
+            (now - jiff::Span::new().hours(49)).to_string(),
         ),
         (
             2,
             "River",
             "Text chat is here. Messages stay in memory, not on disk.",
+            (now - jiff::Span::new().minutes(4)).to_string(),
         ),
         (
             3,
             "Ada",
             "The gateway and REST client run off the UI thread. Voice can join later.",
+            now.to_string(),
         ),
     ] {
         s.store.insert(Message {
@@ -485,9 +520,27 @@ fn demo(s: &mut State) {
                 global_name: None,
             },
             content: content.into(),
-            timestamp: format!("2026-11-23T10:0{i}:00Z"),
+            timestamp,
+            embeds: Vec::new(),
+            attachments: Vec::new(),
         });
     }
+    let media: Message = serde_json::from_value(serde_json::json!({
+        "id":"4","channel_id":"102","author":{"id":"1","username":"Ada"},
+        "timestamp":"2026-11-23T10:04:00Z",
+        "embeds":[{
+            "title":"The Rust Book","description":"A guide to learning Rust.",
+            "url":"https://doc.rust-lang.org/book/","color":6667018,
+            "fields":[{"name":"Chapter 1","value":"Getting Started"}],
+            "footer":{"text":"Rust documentation"}
+        }],
+        "attachments":[{
+            "id":"8","filename":"reading-list.pdf","size":24576,"content_type":"application/pdf",
+            "url":"https://cdn.discordapp.com/attachments/102/8/reading-list.pdf"
+        }]
+    }))
+    .unwrap();
+    s.store.insert(media);
     s.exhausted.insert("102".into());
 }
 pub fn run() {
