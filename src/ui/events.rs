@@ -3,6 +3,7 @@ use crate::{
     model::{Channel, Guild, Message, User},
     network::Event,
     notifications,
+    search::Query,
     store::{Direction, Store},
 };
 use rune::Tx;
@@ -110,6 +111,16 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
         _ => {}
     }
 }
+fn apply_search(
+    s: &mut State,
+    query: &Query,
+    offset: usize,
+    result: Result<(usize, Vec<Message>), String>,
+) {
+    if let Some(search) = s.search.as_mut().filter(|x| &x.query == query) {
+        search.apply(offset, result);
+    }
+}
 pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
     let now = Instant::now();
     let mut changed = s.store.typing.expire(now);
@@ -151,6 +162,11 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
                     Err(error) => s.error = error,
                 }
             }
+            Event::Search {
+                query,
+                offset,
+                result,
+            } => apply_search(s, &query, offset, result),
             Event::Channels(result) => match result {
                 Ok(channels) => {
                     for c in channels {
@@ -241,6 +257,25 @@ mod tests {
         dispatch(&mut state, "MESSAGE_UPDATE", json!({}));
         dispatch(&mut state, "UNKNOWN_EVENT", Value::Null);
         assert!(state.store.messages["2"].is_empty());
+    }
+
+    #[test]
+    fn search_results_apply_only_to_current_query() {
+        use crate::search::{Scope, Search};
+        let mut state = State::default();
+        let scope = Scope::Channel("2".into());
+        let current = Query::new(scope.clone(), "hello").unwrap();
+        let stale = Query::new(scope, "old").unwrap();
+        let hit: Message = serde_json::from_value(json!({"id":"10","channel_id":"2","author":{"id":"1","username":"Ada"},"content":"hello","timestamp":"t"})).unwrap();
+        apply_search(&mut state, &current, 0, Ok((1, vec![hit.clone()])));
+        assert!(state.search.is_none());
+        state.search = Some(Search::new(current.clone()));
+        apply_search(&mut state, &stale, 0, Ok((1, vec![hit.clone()])));
+        assert!(state.search.as_ref().unwrap().results.is_empty());
+        apply_search(&mut state, &current, 0, Ok((1, vec![hit])));
+        let search = state.search.as_ref().unwrap();
+        assert_eq!(search.results.len(), 1);
+        assert!(!search.loading);
     }
 
     #[test]

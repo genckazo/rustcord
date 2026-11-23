@@ -2,6 +2,7 @@ use crate::{
     api::Api,
     gateway,
     model::{Channel, Message},
+    search::Query,
     store::{Direction, HISTORY_LIMIT},
 };
 use serde_json::Value;
@@ -20,6 +21,10 @@ pub enum Command {
         content: String,
     },
     Channels(String),
+    Search {
+        query: Query,
+        offset: usize,
+    },
 }
 pub enum Event {
     TypingTick,
@@ -28,6 +33,11 @@ pub enum Event {
     History(String, Direction, Result<Vec<Message>, String>),
     Sent(Result<Message, String>),
     Channels(Result<Vec<Channel>, String>),
+    Search {
+        query: Query,
+        offset: usize,
+        result: Result<(usize, Vec<Message>), String>,
+    },
 }
 #[derive(Clone)]
 pub struct Events {
@@ -109,6 +119,14 @@ impl Network {
                             }
                             Command::Send { channel, content } => {
                                 Event::Sent(api.send(&channel, &content).await)
+                            }
+                            Command::Search { query, offset } => {
+                                let result = api.search(&query, offset).await;
+                                Event::Search {
+                                    query,
+                                    offset,
+                                    result,
+                                }
                             }
                             Command::Channels(guild) => {
                                 Event::Channels(api.channels(&guild).await.map(|mut channels| {

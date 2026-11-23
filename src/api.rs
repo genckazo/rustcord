@@ -1,4 +1,7 @@
-use crate::model::{Channel, Message};
+use crate::{
+    model::{Channel, Message},
+    search::{self, Query},
+};
 use reqwest::{Client, Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -26,11 +29,23 @@ impl Api {
         path: &str,
         body: Option<Value>,
     ) -> Result<T, String> {
+        self.request_with_query(method, path, &[], body).await
+    }
+    async fn request_with_query<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<Value>,
+    ) -> Result<T, String> {
         for _ in 0..8 {
             let mut request = self
                 .client
                 .request(method.clone(), format!("https://discord.com/api/v10{path}"))
                 .header("Authorization", self.token.as_str());
+            if !query.is_empty() {
+                request = request.query(query);
+            }
             if let Some(ref body) = body {
                 request = request.json(body);
             }
@@ -82,6 +97,27 @@ impl Api {
             Some(json!({"content":content,"allowed_mentions":{"parse":[]}})),
         )
         .await
+    }
+    pub async fn search(
+        &self,
+        query: &Query,
+        offset: usize,
+    ) -> Result<(usize, Vec<Message>), String> {
+        for id in query.ids() {
+            valid_id(id)?;
+        }
+        for _ in 0..3 {
+            let data: Value = self
+                .request_with_query(Method::GET, &query.path(), &query.params(offset), None)
+                .await?;
+            match search::parse(data)? {
+                search::Response::Page { total, messages } => return Ok((total, messages)),
+                search::Response::Indexing { retry_after } => {
+                    tokio::time::sleep(Duration::from_secs_f64(retry_after.clamp(0.5, 10.0))).await;
+                }
+            }
+        }
+        Err("Discord is still indexing these messages; try searching again shortly.".into())
     }
     pub async fn channels(&self, guild: &str) -> Result<Vec<Channel>, String> {
         valid_id(guild)?;
