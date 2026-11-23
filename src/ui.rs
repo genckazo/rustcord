@@ -38,6 +38,7 @@ pub struct State {
     search: Option<Search>,
     search_error: Option<String>,
     scrolled_up: Rc<Cell<bool>>,
+    scrolled_up_changed: Rc<Cell<bool>>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -62,6 +63,7 @@ impl Default for State {
             search: None,
             search_error: None,
             scrolled_up: Rc::new(Cell::new(false)),
+            scrolled_up_changed: Rc::new(Cell::new(false)),
         }
     }
 }
@@ -499,6 +501,7 @@ fn chat(s: &State) -> El {
         }
         let top = s.scroll_top.clone();
         let up = s.scrolled_up.clone();
+        let up_changed = s.scrolled_up_changed.clone();
         let waker = s.waker.clone();
         main = main.child(
             col()
@@ -516,6 +519,7 @@ fn chat(s: &State) -> El {
                     }
                     let away = pos.max[1] - pos.offset[1] > 1.0;
                     if up.replace(away) != away {
+                        up_changed.set(true);
                         if let Some(waker) = &waker {
                             waker();
                         }
