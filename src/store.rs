@@ -386,6 +386,15 @@ impl Store {
             message.reactions.clear();
         }
     }
+    pub fn remove_reaction_emoji(&mut self, channel: &str, message_id: &str, emoji: &Emoji) {
+        if let Some(message) = self
+            .messages
+            .get_mut(channel)
+            .and_then(|ms| ms.iter_mut().find(|m| m.id == message_id))
+        {
+            message.reactions.retain(|r| !r.emoji.same_as(emoji));
+        }
+    }
     pub fn remove_channel(&mut self, id: &str) {
         self.typing.remove_channel(id);
         self.channels.remove(id);

@@ -325,6 +325,24 @@ impl State {
             self.draft.replace_text(edit.previous_draft);
         }
     }
+    pub(super) fn finish_edit_composer(&mut self, channel: &str, message_id: &str) {
+        if self
+            .editing
+            .as_ref()
+            .is_some_and(|e| e.channel == channel && e.message_id == message_id)
+        {
+            if let Some(edit) = self.editing.take() {
+                self.draft.replace_text(edit.previous_draft);
+            }
+        }
+        self.error.clear();
+    }
+    pub(super) fn finish_edit(&mut self, message: Message) {
+        let channel = message.channel_id.clone();
+        let id = message.id.clone();
+        self.store.update_message(message);
+        self.finish_edit_composer(&channel, &id);
+    }
     fn delete_message(&mut self, channel: String, message_id: String) {
         if self.demo {
             self.store.delete_message(&channel, &message_id);
@@ -520,7 +538,7 @@ fn unread_suffix(unread: bool, mentions: u32) -> String {
     }
 }
 fn send(s: &mut State, tx: &mut Tx) {
-    if s.sending || s.draft.text.trim().is_empty() {
+    if s.sending {
         return;
     }
     if s.draft.text.chars().count() > 2000 {
@@ -528,6 +546,15 @@ fn send(s: &mut State, tx: &mut Tx) {
         return;
     }
     if let Some(edit) = s.editing.clone() {
+        let has_attachments = s
+            .store
+            .messages
+            .get(&edit.channel)
+            .and_then(|ms| ms.iter().find(|m| m.id == edit.message_id))
+            .is_some_and(|m| !m.attachments.is_empty());
+        if s.draft.text.trim().is_empty() && !has_attachments {
+            return;
+        }
         if s.demo {
             demo_actions::edit(s, edit.channel, edit.message_id);
             return;
@@ -537,6 +564,9 @@ fn send(s: &mut State, tx: &mut Tx) {
             message_id: edit.message_id,
             content: s.draft.text.clone(),
         });
+        return;
+    }
+    if s.draft.text.trim().is_empty() {
         return;
     }
     if let Some(channel) = s.channel.clone() {
@@ -1761,5 +1791,88 @@ mod tests {
         // Delete removes the message from demo store.
         s.delete_message("102".into(), sent.id.clone());
         assert!(!s.store.messages["102"].iter().any(|m| m.id == sent.id));
+    }
+
+    #[test]
+    fn edit_save_restores_previous_draft_and_preserves_other_channel_draft() {
+        let mut s = State::default();
+        demo(&mut s);
+        let target = s.store.messages["102"][2].clone();
+        s.draft.replace_text("Meeting notes");
+        s.start_edit(&target);
+        s.draft.replace_text("Updated text");
+        demo_actions::edit(&mut s, "102".into(), target.id.clone());
+        assert!(s.editing.is_none());
+        assert_eq!(s.draft.text, "Meeting notes");
+        assert_eq!(s.store.messages["102"][2].content, "Updated text");
+
+        // When an edit completes after switching channels, the new channel's
+        // composer text is preserved while the edited message still updates.
+        let mut updated = target.clone();
+        updated.content = "Late edit".into();
+        updated.edited_timestamp = Some("2026-11-23T12:00:00Z".into());
+        s.channel = Some("103".into());
+        s.draft.replace_text("Draft in projects");
+        s.finish_edit(updated);
+        assert_eq!(s.draft.text, "Draft in projects");
+        assert_eq!(s.store.messages["102"][2].content, "Late edit");
+    }
+
+    #[test]
+    fn edit_allows_clearing_attachment_caption_but_not_text_only_message() {
+        let mut s = State::default();
+        let (network, mut commands) = Network::mock();
+        s.network = Some(network);
+        s.channel = Some("102".into());
+        let with_attachment: Message = serde_json::from_value(serde_json::json!({
+            "id": "10",
+            "channel_id": "102",
+            "author": {"id": "1", "username": "You"},
+            "content": "Screenshot from yesterday",
+            "timestamp": "2026-11-23T10:00:00Z",
+            "attachments": [{
+                "id": "99",
+                "filename": "shot.png",
+                "size": 1024,
+                "url": "https://cdn.discordapp.com/attachments/102/99/shot.png"
+            }]
+        }))
+        .unwrap();
+        let text_only: Message = serde_json::from_value(serde_json::json!({
+            "id": "11",
+            "channel_id": "102",
+            "author": {"id": "1", "username": "You"},
+            "content": "Just text",
+            "timestamp": "2026-11-23T10:01:00Z"
+        }))
+        .unwrap();
+        s.store.insert(with_attachment.clone());
+        s.store.insert(text_only.clone());
+
+        let mut tx = Tx::default();
+        // Text-only edit with empty content is rejected.
+        s.start_edit(&text_only);
+        s.draft.clear();
+        send(&mut s, &mut tx);
+        assert!(!s.sending);
+        assert!(commands.try_recv().is_err());
+
+        // Attachment message edit with empty content queues Command::Edit { content: "" }.
+        s.start_edit(&with_attachment);
+        s.draft.clear();
+        send(&mut s, &mut tx);
+        assert!(s.sending);
+        match commands.try_recv().unwrap() {
+            Command::Edit {
+                channel,
+                message_id,
+                content,
+            } => {
+                assert_eq!(channel, "102");
+                assert_eq!(message_id, "10");
+                assert_eq!(content, "");
+            }
+            _ => panic!("expected Command::Edit"),
+        }
     }
 }

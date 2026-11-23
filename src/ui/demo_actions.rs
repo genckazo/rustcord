@@ -53,18 +53,19 @@ pub(super) fn send(s: &mut State, channel: String) {
     s.error.clear();
 }
 pub(super) fn edit(s: &mut State, channel: String, message_id: String) {
-    if let Some(message) = s
+    if let Some(mut message) = s
         .store
         .messages
-        .get_mut(&channel)
-        .and_then(|ms| ms.iter_mut().find(|m| m.id == message_id))
+        .get(&channel)
+        .and_then(|ms| ms.iter().find(|m| m.id == message_id))
+        .cloned()
     {
         message.content = s.draft.text.clone();
         message.edited_timestamp = Some("Demo · edited".into());
+        s.finish_edit(message);
+    } else {
+        s.finish_edit_composer(&channel, &message_id);
     }
-    s.editing = None;
-    s.draft.clear();
-    s.error.clear();
 }
 fn local_user() -> User {
     User {
