@@ -53,6 +53,10 @@ impl Api {
             if !response.status().is_success() {
                 return Err(format!("Discord HTTP {}", response.status().as_u16()));
             }
+            if response.status() == StatusCode::NO_CONTENT {
+                return serde_json::from_value(Value::Null)
+                    .map_err(|_| "Invalid Discord response".into());
+            }
             return response
                 .json()
                 .await
@@ -89,6 +93,11 @@ impl Api {
     pub async fn channels(&self, guild: &str) -> Result<Vec<Channel>, String> {
         valid_id(guild)?;
         self.request(Method::GET, &format!("/guilds/{guild}/channels"), None)
+            .await
+    }
+    pub async fn typing(&self, channel: &str) -> Result<(), String> {
+        valid_id(channel)?;
+        self.request(Method::POST, &format!("/channels/{channel}/typing"), None)
             .await
     }
 }
