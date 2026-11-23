@@ -2,6 +2,7 @@ use serde::Deserialize;
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct User {
+    #[serde(default)]
     pub id: String,
     #[serde(default)]
     pub username: String,
