@@ -14,12 +14,17 @@ use rune::{
     tok::{self, type_},
     AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, Waker,
 };
-use std::{cell::Cell, collections::HashSet, rc::Rc};
+use std::{
+    cell::Cell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 use zeroize::Zeroizing;
 
 pub struct State {
     token: TextEdit,
     draft: TextEdit,
+    drafts: HashMap<String, String>,
     remember: bool,
     network: Option<Network>,
     waker: Option<Waker>,
@@ -43,6 +48,7 @@ impl Default for State {
         Self {
             token: TextEdit::new("").secure(),
             draft: TextEdit::default(),
+            drafts: HashMap::new(),
             remember: false,
             network: None,
             waker: None,
@@ -149,9 +155,20 @@ impl State {
         } else {
             self.close_search();
         }
+        if let Some(current) = self.channel.take() {
+            if self.draft.text.is_empty() {
+                self.drafts.remove(&current);
+            } else {
+                self.drafts.insert(current, self.draft.text.clone());
+            }
+        }
         self.channel = Some(channel.clone());
         self.store.pin(Some(channel.clone()));
-        self.draft.clear();
+        if let Some(saved) = self.drafts.get(&channel) {
+            self.draft.replace_text(saved.clone());
+        } else {
+            self.draft.clear();
+        }
         if !self.store.messages.contains_key(&channel) {
             self.history(channel, false);
         }
@@ -187,6 +204,7 @@ fn logout(s: &mut State, _: &mut Tx) {
     s.channel = None;
     s.token.clear();
     s.draft.clear();
+    s.drafts.clear();
     s.loading.clear();
     s.exhausted.clear();
     s.sending = false;

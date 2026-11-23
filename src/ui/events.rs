@@ -168,6 +168,7 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
                 match result {
                     Ok(m) => {
                         s.store.typing.reset(&m.channel_id);
+                        s.drafts.remove(&m.channel_id);
                         if let Some(evicted) = s.store.insert(m) {
                             s.exhausted.remove(&evicted);
                         }
@@ -291,6 +292,25 @@ mod tests {
         let search = state.search.as_ref().unwrap();
         assert_eq!(search.results.len(), 1);
         assert!(!search.loading);
+    }
+
+    #[test]
+    fn drafts_survive_channel_switch() {
+        let mut state = State::default();
+        let mut tx = Tx::default();
+        state.select("1".into(), &mut tx);
+        state.draft.replace_text("first draft");
+        state.select("2".into(), &mut tx);
+        assert!(state.draft.text.is_empty());
+        state.draft.replace_text("second draft");
+        state.select("1".into(), &mut tx);
+        assert_eq!(state.draft.text, "first draft");
+        state.select("2".into(), &mut tx);
+        assert_eq!(state.draft.text, "second draft");
+        state.draft.clear();
+        state.select("1".into(), &mut tx);
+        state.select("2".into(), &mut tx);
+        assert!(state.draft.text.is_empty());
     }
 
     #[test]
