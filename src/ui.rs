@@ -299,15 +299,29 @@ impl State {
         tx.scroll_to_bottom("transcript");
     }
 }
+fn normalize_token(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| {
+            trimmed
+                .strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+        })
+        .map(str::trim)
+        .unwrap_or(trimmed)
+}
 fn connect(s: &mut State, _: &mut Tx) {
-    if s.token.text.trim().is_empty() {
+    let cleaned = normalize_token(&s.token.text);
+    if cleaned.is_empty() {
         s.error = "Enter your Discord token to connect.".into();
         return;
     }
     let Some(waker) = s.waker.clone() else {
         return;
     };
-    let token = Zeroizing::new(s.token.text.trim().to_owned());
+    let token = Zeroizing::new(cleaned.to_owned());
     let result = if s.remember {
         auth::save(&token)
     } else {
@@ -1348,5 +1362,13 @@ mod tests {
         s.network = None;
         s.demo = true;
         assert!(in_session(&s));
+    }
+
+    #[test]
+    fn normalize_token_strips_whitespace_and_matching_quotes() {
+        assert_eq!(normalize_token("  abc.def.ghi  "), "abc.def.ghi");
+        assert_eq!(normalize_token("\"abc.def.ghi\""), "abc.def.ghi");
+        assert_eq!(normalize_token(" 'abc.def.ghi' "), "abc.def.ghi");
+        assert_eq!(normalize_token("  \"\"  "), "");
     }
 }

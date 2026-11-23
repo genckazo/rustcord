@@ -5221,6 +5221,7 @@ dependencies = [
  "reqwest 0.13.5",
  "rune",
  "rune-notify",
+ "rustls",
  "serde",
  "serde_json",
  "songbird",
