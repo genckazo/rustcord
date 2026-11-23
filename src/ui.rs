@@ -266,6 +266,7 @@ impl State {
     fn select(&mut self, channel: String, tx: &mut Tx) {
         self.scroll_top.set(false);
         self.scroll_bottom.set(false);
+        self.scrolled_up.set(false);
         if self.guild.is_none() && self.channel.as_ref() != Some(&channel) {
             self.reset_search();
         } else {

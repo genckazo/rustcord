@@ -101,6 +101,19 @@ fn demo_voice_join_toggles_move_leave_and_invalid_target() {
 }
 
 #[test]
+fn select_clears_scroll_flags_and_scrolled_up() {
+    let mut s = State::default();
+    demo(&mut s);
+    s.scroll_top.set(true);
+    s.scroll_bottom.set(true);
+    s.scrolled_up.set(true);
+    s.select("103".into(), &mut Tx::default());
+    assert!(!s.scroll_top.get());
+    assert!(!s.scroll_bottom.get());
+    assert!(!s.scrolled_up.get());
+}
+
+#[test]
 fn voice_panel_hidden_without_target_in_demo_and_real_modes() {
     let mut s = State::default();
     voice_panel::demo(&mut s);
