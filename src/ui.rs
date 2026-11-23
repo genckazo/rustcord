@@ -37,6 +37,7 @@ pub struct State {
     search_here: bool,
     search: Option<Search>,
     search_error: Option<String>,
+    scrolled_up: Rc<Cell<bool>>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -60,6 +61,7 @@ impl Default for State {
             search_here: false,
             search: None,
             search_error: None,
+            scrolled_up: Rc::new(Cell::new(false)),
         }
     }
 }
@@ -496,6 +498,7 @@ fn chat(s: &State) -> El {
             }
         }
         let top = s.scroll_top.clone();
+        let up = s.scrolled_up.clone();
         let waker = s.waker.clone();
         main = main.child(
             col()
@@ -507,6 +510,12 @@ fn chat(s: &State) -> El {
                 .on_scroll_offset(move |pos| {
                     if pos.offset[1] < 1.0 && pos.max[1] > 1.0 {
                         top.set(true);
+                        if let Some(waker) = &waker {
+                            waker();
+                        }
+                    }
+                    let away = pos.max[1] - pos.offset[1] > 1.0;
+                    if up.replace(away) != away {
                         if let Some(waker) = &waker {
                             waker();
                         }
@@ -544,9 +553,11 @@ fn chat(s: &State) -> El {
                     send,
                 ))),
         );
-        main = main.child(button("bottom", "↓ Scroll to bottom", false, |_, tx| {
-            tx.scroll_to_bottom("transcript")
-        }));
+        if s.scrolled_up.get() {
+            main = main.child(button("bottom", "↓ Scroll to bottom", false, |_, tx| {
+                tx.scroll_to_bottom("transcript")
+            }));
+        }
     } else {
         main = main.child(
             col()
