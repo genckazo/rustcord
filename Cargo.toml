@@ -10,7 +10,7 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["c
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-futures-util = { version = "0.3", features = ["sink"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 keyring = "4.2"
 rand = "0.10"
 zeroize = "1"
