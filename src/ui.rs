@@ -42,6 +42,7 @@ pub struct State {
     guild: Option<String>,
     channel: Option<String>,
     loading: HashSet<String>,
+    pending_present: HashSet<String>,
     sidebar_limit: usize,
     demo: bool,
     sending: bool,
@@ -62,6 +63,7 @@ impl Default for State {
             guild: None,
             channel: None,
             loading: HashSet::new(),
+            pending_present: HashSet::new(),
             sidebar_limit: SIDEBAR_PAGE,
             demo: false,
             sending: false,
@@ -71,6 +73,28 @@ impl Default for State {
     }
 }
 impl State {
+    fn finish_sent(&mut self, message: Message) -> bool {
+        self.sending = false;
+        self.draft.clear();
+        if self
+            .store
+            .windows
+            .get(&message.channel_id)
+            .is_some_and(|w| w.has_newer)
+        {
+            self.pending_present.insert(message.channel_id.clone());
+            self.load_pending_present(&message.channel_id);
+            false
+        } else {
+            self.store.insert(message);
+            true
+        }
+    }
+    fn load_pending_present(&mut self, channel: &str) {
+        if !self.loading.contains(channel) && self.pending_present.remove(channel) {
+            self.history(channel.to_owned(), Direction::Latest);
+        }
+    }
     fn finish_history(
         &mut self,
         channel: &str,
@@ -78,6 +102,10 @@ impl State {
         result: Result<Vec<Message>, String>,
     ) -> bool {
         self.loading.remove(channel);
+        if self.pending_present.contains(channel) {
+            self.load_pending_present(channel);
+            return false;
+        }
         match result {
             Ok(messages) => {
                 self.store
@@ -174,6 +202,7 @@ fn logout(s: &mut State, _: &mut Tx) {
     s.token.clear();
     s.draft.clear();
     s.loading.clear();
+    s.pending_present.clear();
     s.sidebar_limit = SIDEBAR_PAGE;
     s.sending = false;
     s.demo = false;
@@ -621,6 +650,47 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detached_send_reloads_latest_and_scrolls_when_it_arrives() {
+        for loading in [false, true] {
+            let mut state = State::default();
+            let (network, mut commands) = Network::mock();
+            state.network = Some(network);
+            state.channel = Some("1".into());
+            state.store.windows.entry("1".into()).or_default().has_newer = true;
+            state.draft.replace_text("sent");
+            state.sending = true;
+            if loading {
+                state.loading.insert("1".into());
+            }
+            let message = Message {
+                id: "100".into(),
+                channel_id: "1".into(),
+                author: User::default(),
+                content: "sent".into(),
+                timestamp: "now".into(),
+            };
+            assert!(!state.finish_sent(message.clone()));
+            assert!(!state.sending);
+            assert!(state.draft.text.is_empty());
+            assert!(!state.store.messages.contains_key("1"));
+            if loading {
+                assert!(commands.try_recv().is_err());
+                assert!(!state.finish_history("1", Direction::Older, Ok(vec![])));
+            }
+            assert!(matches!(commands.try_recv().unwrap(), Command::History {
+                channel, direction: Direction::Latest, cursor: None
+            } if channel == "1"));
+            assert!(state.loading.contains("1"));
+            assert!(state.finish_history("1", Direction::Latest, Ok(vec![message.clone()])));
+            assert!(!state.store.windows["1"].has_newer);
+            assert_eq!(state.store.messages["1"][0].id, "100");
+            assert!(state.finish_sent(message));
+            assert!(commands.try_recv().is_err());
+            assert_eq!(state.store.messages["1"].len(), 1);
+        }
+    }
 
     #[test]
     fn sidebar_limits_and_keeps_selection() {

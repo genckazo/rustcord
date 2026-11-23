@@ -12,6 +12,7 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
         "READY" => {
             s.store = Store::default();
             s.loading.clear();
+            s.pending_present.clear();
             s.sidebar_limit = super::SIDEBAR_PAGE;
             s.store.user = serde_json::from_value::<User>(data["user"].clone()).ok();
             if let Ok(guilds) = serde_json::from_value::<Vec<Guild>>(data["guilds"].clone()) {
@@ -99,9 +100,9 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
                 s.sending = false;
                 match result {
                     Ok(m) => {
-                        s.store.insert(m);
-                        s.draft.clear();
-                        tx.scroll_to_bottom("transcript");
+                        if s.finish_sent(m) {
+                            tx.scroll_to_bottom("transcript");
+                        }
                     }
                     Err(error) => s.error = error,
                 }

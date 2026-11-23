@@ -45,6 +45,12 @@ pub struct Network {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
 }
 impl Network {
+    #[cfg(test)]
+    pub fn mock() -> (Self, mpsc::Receiver<Command>) {
+        let (tx, commands) = mpsc::channel(64);
+        let (_, rx) = mpsc::channel(256);
+        (Self { tx, rx, stop: None }, commands)
+    }
     pub fn start(token: Zeroizing<String>, waker: rune::Waker) -> Self {
         let (tx, mut commands) = mpsc::channel(64);
         let (events_tx, rx) = mpsc::channel(256);
