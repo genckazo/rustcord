@@ -174,6 +174,13 @@ fn apply_search(
         search.apply(offset, result);
     }
 }
+fn voice_snapshot(s: &mut State, voice: crate::voice::Snapshot) {
+    if voice.target.is_none() && !voice.status.is_empty() && voice.status != "Voice disconnected" {
+        s.error = voice.status.clone();
+    }
+    s.voice = voice;
+}
+
 pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
     let now = Instant::now();
     let mut changed = s.store.typing.expire(now);
@@ -189,7 +196,7 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
         }
         changed = true;
         match event {
-            Event::Voice(voice) => s.voice = voice,
+            Event::Voice(voice) => voice_snapshot(s, voice),
             Event::TypingTick => {}
             Event::Status(status) => s.status = status,
             Event::Dispatch(name, data) => dispatch(s, &name, data),
@@ -279,6 +286,52 @@ fn apply_call(s: &mut State, data: &Value) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn failed_voice_join_shows_error_without_a_panel() {
+        for status in [
+            "Voice connection failed",
+            "Voice handshake timed out",
+            "Untrusted voice endpoint",
+            "Wait for Discord READY before joining voice",
+        ] {
+            let mut s = State::default();
+            super::super::voice_panel::demo(&mut s);
+            voice_snapshot(
+                &mut s,
+                crate::voice::Snapshot {
+                    status: status.into(),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(s.error, status);
+            assert_eq!(s.voice.status, status);
+            assert!(super::super::voice_panel::panel(&s).is_none());
+        }
+    }
+
+    #[test]
+    fn normal_voice_snapshots_do_not_replace_banner_errors() {
+        let mut s = State {
+            error: "Existing error".into(),
+            ..Default::default()
+        };
+        for status in ["", "Voice disconnected"] {
+            voice_snapshot(
+                &mut s,
+                crate::voice::Snapshot {
+                    status: status.into(),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(s.error, "Existing error");
+        }
+        super::super::voice_panel::demo(&mut s);
+        let voice = s.voice.clone();
+        voice_snapshot(&mut s, voice);
+        assert_eq!(s.error, "Existing error");
+        assert!(s.voice.target.is_some());
+    }
 
     #[test]
     fn dm_ready_labels_order_activity_and_recipients() {
