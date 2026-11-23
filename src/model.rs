@@ -36,6 +36,9 @@ pub struct Channel {
     pub parent_id: Option<String>,
     #[serde(default)]
     pub recipients: Vec<User>,
+    #[serde(default)]
+    pub recipient_ids: Vec<String>,
+    pub last_message_id: Option<String>,
 }
 impl Channel {
     pub fn label(&self) -> String {

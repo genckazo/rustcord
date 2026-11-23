@@ -91,6 +91,14 @@ impl Api {
         self.request(Method::GET, &format!("/guilds/{guild}/channels"), None)
             .await
     }
+    pub async fn open_dm(&self, user: &str) -> Result<Channel, String> {
+        self.request(Method::POST, "/users/@me/channels", Some(dm_body(user)?))
+            .await
+    }
+}
+fn dm_body(user: &str) -> Result<Value, String> {
+    valid_id(user)?;
+    Ok(json!({"recipients": [user]}))
 }
 fn valid_id(id: &str) -> Result<(), String> {
     if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
@@ -103,6 +111,16 @@ fn valid_id(id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::valid_id;
+
+    #[test]
+    fn create_dm_body() {
+        assert_eq!(
+            super::dm_body("123").unwrap(),
+            serde_json::json!({"recipients":["123"]})
+        );
+        assert!(super::dm_body("").is_err());
+        assert!(super::dm_body("../users").is_err());
+    }
     #[test]
     fn ids_cannot_escape_discord_routes() {
         assert!(valid_id("123456789").is_ok());

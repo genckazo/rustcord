@@ -53,6 +53,18 @@ impl Default for State {
     }
 }
 impl State {
+    fn open_dm(&mut self, user: User, tx: &mut Tx) {
+        if self.store.user.as_ref().is_some_and(|me| me.id == user.id) {
+            return;
+        }
+        self.store.users.insert(user.id.clone(), user.clone());
+        if let Some(id) = self.store.dm_for(&user.id) {
+            self.guild = None;
+            self.select(id, tx);
+        } else if !self.demo {
+            self.command(Command::OpenDm(user.id));
+        }
+    }
     fn command(&mut self, command: Command) -> bool {
         if self
             .network
@@ -255,7 +267,19 @@ fn chat(s: &State) -> El {
         let id = c.id.clone();
         button(
             format!("channel-{id}"),
-            format!("# {}", c.label()),
+            format!(
+                "{} {}",
+                if c.guild_id.is_none() {
+                    if c.kind == 3 {
+                        "@@"
+                    } else {
+                        "@"
+                    }
+                } else {
+                    "#"
+                },
+                s.store.channel_label(c)
+            ),
             s.channel.as_ref() == Some(&id),
             move |s, tx| s.select(id.clone(), tx),
         )
@@ -307,7 +331,7 @@ fn chat(s: &State) -> El {
                 s.store
                     .channels
                     .get(channel)
-                    .map(|c| c.label())
+                    .map(|c| s.store.channel_label(c))
                     .unwrap_or_default(),
             )
             .font(type_::TITLE)
@@ -325,6 +349,7 @@ fn chat(s: &State) -> El {
         }
         if let Some(items) = s.store.messages.get(channel) {
             for m in items {
+                let author = m.author.clone();
                 messages = messages.child(
                     col()
                         .key(format!("message-{}", m.id))
@@ -336,7 +361,13 @@ fn chat(s: &State) -> El {
                                 .child(
                                     text(m.author.name())
                                         .font(type_::LABEL)
-                                        .color(tok::accent(0, true)),
+                                        .color(tok::accent(0, true))
+                                        .key(format!("author-{}", m.id))
+                                        .role("button")
+                                        .focusable(true)
+                                        .on_press_tx(move |s: &mut State, tx| {
+                                            s.open_dm(author.clone(), tx)
+                                        }),
                                 )
                                 .child(
                                     text(&m.timestamp).font(type_::BODY).color(t.text_secondary),
@@ -511,7 +542,14 @@ pub fn run() {
             }
         }),
         poll: Some(events::poll),
-        scenes: &[("main", demo)],
+        scenes: &[
+            ("main", demo),
+            ("dms", |s| {
+                demo(s);
+                s.guild = None;
+                s.channel = Some("200".into());
+            }),
+        ],
         min_size: Some((800.0, 540.0)),
         ..AppSpec::new("Rustcord", (1120.0, 760.0), State::default, view)
     });

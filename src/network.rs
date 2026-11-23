@@ -17,6 +17,7 @@ pub enum Command {
         content: String,
     },
     Channels(String),
+    OpenDm(String),
 }
 pub enum Event {
     Status(String),
@@ -24,6 +25,7 @@ pub enum Event {
     History(String, Result<Vec<Message>, String>),
     Sent(Result<Message, String>),
     Channels(Result<Vec<Channel>, String>),
+    OpenedDm(Result<Channel, String>),
 }
 #[derive(Clone)]
 pub struct Events {
@@ -70,6 +72,7 @@ impl Network {
                 let worker = async {
                     while let Some(command) = commands.recv().await {
                         let event = match command {
+                            Command::OpenDm(user) => Event::OpenedDm(api.open_dm(&user).await),
                             Command::History { channel, before } => {
                                 let result = api.messages(&channel, before.as_deref()).await;
                                 Event::History(channel, result)
