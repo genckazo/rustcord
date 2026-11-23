@@ -114,9 +114,9 @@ pub(super) fn demo(s: &mut State) {
         channel: "104".into(),
     });
     s.voice.status = "Voice connected · demo, no devices or network".into();
-    for (id, name) in [("1", "Ada"), ("2", "River")] {
+    for (id, name) in [("2", "Ada"), ("3", "River")] {
         let state = serde_json::from_value(serde_json::json!({"guild_id":"100","channel_id":"104","user_id":id,"member":{"user":{"id":id,"username":name}}})).unwrap();
         s.store.voice_state(state);
     }
-    s.voice.speaking.insert("2".into());
+    s.voice.speaking.insert("3".into());
 }

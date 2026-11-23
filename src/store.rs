@@ -2,16 +2,76 @@ use crate::model::{Channel, Guild, Message, User, VoiceState};
 use std::collections::{HashMap, VecDeque};
 
 pub const MESSAGE_CAP: usize = 200;
+/// Maximum number of channel transcripts held at once. Channels are evicted
+/// least-recently-used and refetched on demand when selected again.
+pub const CHANNEL_CAP: usize = 32;
 #[derive(Default)]
 pub struct Store {
     pub typing: crate::typing::Typing,
     pub user: Option<User>,
+    pub users: HashMap<String, User>,
     pub guilds: HashMap<String, Guild>,
     pub channels: HashMap<String, Channel>,
     pub messages: HashMap<String, VecDeque<Message>>,
     pub voice_states: HashMap<(Option<String>, String), VoiceState>,
+    /// LRU order of `messages` keys, least recent first.
+    recency: VecDeque<String>,
+    /// Selected channel, exempt from eviction.
+    pinned: Option<String>,
 }
 impl Store {
+    pub fn channel_label(&self, channel: &Channel) -> String {
+        if channel.guild_id.is_some() {
+            return channel.label();
+        }
+        if let Some(name) = channel.name.as_ref().filter(|name| !name.is_empty()) {
+            return name.clone();
+        }
+        let names: Vec<_> = channel
+            .recipients
+            .iter()
+            .chain(channel.recipient_ids.iter().filter_map(|id| {
+                (!channel.recipients.iter().any(|u| &u.id == id))
+                    .then(|| self.users.get(id))
+                    .flatten()
+            }))
+            .filter(|u| self.user.as_ref().is_none_or(|me| me.id != u.id))
+            .map(User::name)
+            .filter(|name| !name.is_empty())
+            .collect();
+        if names.is_empty() {
+            if channel.kind == 3 {
+                "Unnamed group"
+            } else {
+                "Unknown user"
+            }
+            .into()
+        } else {
+            names.join(", ")
+        }
+    }
+    pub fn dm_for(&self, user: &str) -> Option<String> {
+        self.channels
+            .values()
+            .find(|c| {
+                c.guild_id.is_none()
+                    && c.kind == 1
+                    && (c.recipients.iter().any(|u| u.id == user)
+                        || c.recipient_ids.iter().any(|id| id == user))
+            })
+            .map(|c| c.id.clone())
+    }
+    pub fn activity(&mut self, message: &Message) {
+        if let Some(c) = self.channels.get_mut(&message.channel_id) {
+            if c.guild_id.is_none()
+                && c.last_message_id
+                    .as_ref()
+                    .is_none_or(|id| snowflake(id) < snowflake(&message.id))
+            {
+                c.last_message_id = Some(message.id.clone());
+            }
+        }
+    }
     pub fn guild(&mut self, mut guild: Guild) {
         self.voice_states
             .retain(|(guild_id, _), _| guild_id.as_deref() != Some(&guild.id));
@@ -67,11 +127,42 @@ impl Store {
         members.sort_by(|a, b| a.1.cmp(&b.1));
         members
     }
-    pub fn insert(&mut self, message: Message) {
-        let messages = self.messages.entry(message.channel_id.clone()).or_default();
+    pub fn pin(&mut self, channel: Option<String>) {
+        self.pinned = channel;
+    }
+    /// Ensure `channel` has a transcript buffer, marking it most recently used.
+    /// Returns the least recently used channel evicted past CHANNEL_CAP, if any.
+    pub fn ensure(&mut self, channel: &str) -> Option<String> {
+        if self.messages.contains_key(channel) {
+            if let Some(index) = self.recency.iter().position(|id| id == channel) {
+                self.recency.remove(index);
+            }
+            self.recency.push_back(channel.into());
+            return None;
+        }
+        self.messages.insert(channel.into(), VecDeque::new());
+        self.recency.push_back(channel.into());
+        let mut evicted = None;
+        while self.messages.len() > CHANNEL_CAP {
+            let Some(candidate) = self.recency.pop_front() else {
+                break;
+            };
+            if self.pinned.as_ref() == Some(&candidate) {
+                self.recency.push_back(candidate);
+                continue;
+            }
+            self.messages.remove(&candidate);
+            evicted = Some(candidate);
+        }
+        evicted
+    }
+    /// Returns the channel evicted while inserting, if any.
+    pub fn insert(&mut self, message: Message) -> Option<String> {
+        let evicted = self.ensure(&message.channel_id);
+        let messages = self.messages.get_mut(&message.channel_id).unwrap();
         if let Some(old) = messages.iter_mut().find(|m| m.id == message.id) {
             *old = message;
-            return;
+            return evicted;
         }
         let key = snowflake(&message.id);
         let index = messages
@@ -82,6 +173,7 @@ impl Store {
         while messages.len() > MESSAGE_CAP {
             messages.pop_front();
         }
+        evicted
     }
     pub fn remove_channel(&mut self, id: &str) {
         self.typing.remove_channel(id);
@@ -89,6 +181,12 @@ impl Store {
         self.messages.remove(id);
         self.voice_states
             .retain(|_, state| state.channel_id.as_deref() != Some(id));
+        if let Some(index) = self.recency.iter().position(|c| c == id) {
+            self.recency.remove(index);
+        }
+        if self.pinned.as_deref() == Some(id) {
+            self.pinned = None;
+        }
     }
     pub fn channels_for(&self, guild: Option<&str>) -> Vec<&Channel> {
         let mut channels: Vec<_> = self
@@ -96,7 +194,16 @@ impl Store {
             .values()
             .filter(|c| c.guild_id.as_deref() == guild)
             .collect();
-        channels.sort_by_key(|c| (c.position, snowflake(&c.id)));
+        if guild.is_none() {
+            channels.sort_by_key(|c| {
+                (
+                    std::cmp::Reverse(c.last_message_id.as_deref().map(snowflake)),
+                    snowflake(&c.id),
+                )
+            });
+        } else {
+            channels.sort_by_key(|c| (c.position, snowflake(&c.id)));
+        }
         channels
     }
 }
@@ -131,6 +238,103 @@ mod tests {
         store.remove_channel("1");
         assert!(store.messages.is_empty());
     }
+    fn message_in(channel: usize, id: usize) -> Message {
+        Message {
+            id: id.to_string(),
+            channel_id: channel.to_string(),
+            author: User::default(),
+            content: "x".into(),
+            timestamp: "now".into(),
+            embeds: Vec::new(),
+            attachments: Vec::new(),
+        }
+    }
+    #[test]
+    fn channel_cache_is_bounded_and_lru() {
+        let mut store = Store::default();
+        for channel in 0..100 {
+            store.insert(message_in(channel, channel));
+        }
+        assert_eq!(store.messages.len(), CHANNEL_CAP);
+        assert!(!store.messages.contains_key("67"));
+        assert!(store.messages.contains_key("99"));
+
+        // The pinned (selected) channel is exempt from eviction.
+        store.pin(Some("75".into()));
+        for channel in 100..150 {
+            store.insert(message_in(channel, channel));
+        }
+        assert_eq!(store.messages.len(), CHANNEL_CAP);
+        assert!(store.messages.contains_key("75"));
+
+        // Writing to a channel makes it most recently used: promoting the
+        // oldest survivor (119) shifts eviction onto the next-oldest (120).
+        store.pin(None);
+        store.insert(message_in(119, 1000));
+        for channel in 150..170 {
+            store.insert(message_in(channel, channel));
+        }
+        assert!(store.messages.contains_key("119"));
+        assert!(!store.messages.contains_key("120"));
+        assert!(store.messages.contains_key("149"));
+        assert!(store.insert(message_in(200, 1)).is_some());
+
+        store.remove_channel("149");
+        assert!(!store.messages.contains_key("149"));
+        for channel in 300..350 {
+            store.insert(message_in(channel, channel));
+        }
+        assert_eq!(store.messages.len(), CHANNEL_CAP);
+    }
+    fn messages_bytes(store: &Store) -> usize {
+        store
+            .messages
+            .iter()
+            .map(|(channel, ms)| {
+                channel.len()
+                    + ms.len() * std::mem::size_of::<Message>()
+                    + ms.iter()
+                        .map(|m| {
+                            m.id.capacity()
+                                + m.channel_id.capacity()
+                                + m.author.username.capacity()
+                                + m.author.global_name.as_ref().map_or(0, |n| n.capacity())
+                                + m.content.capacity()
+                                + m.timestamp.capacity()
+                        })
+                        .sum::<usize>()
+            })
+            .sum()
+    }
+    #[test]
+    fn channel_cache_memory_estimate() {
+        let mut store = Store::default();
+        let content = "lorem ipsum ".repeat(40);
+        for channel in 0..100 {
+            for i in 0..MESSAGE_CAP {
+                store.insert(Message {
+                    id: (channel * 1000 + i).to_string(),
+                    channel_id: channel.to_string(),
+                    author: User {
+                        id: "42".into(),
+                        username: "someone".into(),
+                        global_name: Some("Some One".into()),
+                    },
+                    content: content.clone(),
+                    timestamp: "2026-11-23T10:00:00Z".into(),
+                    embeds: vec![],
+                    attachments: vec![],
+                });
+            }
+        }
+        let bytes = messages_bytes(&store);
+        println!(
+            "cached channels: {}, estimated transcript bytes: {}",
+            store.messages.len(),
+            bytes
+        );
+        assert_eq!(store.messages.len(), CHANNEL_CAP);
+    }
     #[test]
     fn empty_and_channel_ordering() {
         let mut store = Store::default();
@@ -149,5 +353,23 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["2", "3", "10"]
         );
+    }
+    #[test]
+    fn activity_is_monotonic_and_does_not_reorder_guilds() {
+        let mut store = Store::default();
+        for (id, position) in [("1", 2), ("2", 1)] {
+            let c = serde_json::from_value(
+                serde_json::json!({"id":id,"type":0,"guild_id":"5","position":position}),
+            )
+            .unwrap();
+            store.channels.insert(id.into(), c);
+        }
+        store.activity(&message(100));
+        assert!(store.channels["1"].last_message_id.is_none());
+        assert_eq!(store.channels_for(Some("5"))[0].id, "2");
+        store.channels.get_mut("1").unwrap().guild_id = None;
+        store.activity(&message(100));
+        store.activity(&message(9));
+        assert_eq!(store.channels["1"].last_message_id.as_deref(), Some("100"));
     }
 }

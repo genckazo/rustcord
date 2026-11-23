@@ -31,7 +31,7 @@ fn demo_send_appends_clears_and_rejects_empty_or_long_messages() {
         send(&mut s, &mut tx);
         let message = s.store.messages["102"].back().unwrap();
         assert_eq!(message.content, content);
-        assert_eq!(message.author.id, "demo-self");
+        assert_eq!(message.author.id, s.store.user.as_ref().unwrap().id);
         assert!(s.draft.text.is_empty());
         assert!(s.error.is_empty());
     }
@@ -61,7 +61,7 @@ fn demo_voice_join_toggles_move_leave_and_invalid_target() {
     assert!(s.voice.target.as_ref() == Some(&guild));
     assert_eq!(
         s.store.voice_members("104"),
-        vec![("demo-self".into(), "You".into())]
+        vec![(s.store.user.as_ref().unwrap().id.clone(), "You".into())]
     );
     s.voice_command(Voice::Mute(true));
     assert!(s.voice.mute);

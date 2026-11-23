@@ -10,11 +10,18 @@ pub(super) fn send(s: &mut State, channel: String) {
         .messages
         .values()
         .flatten()
-        .filter_map(|m| m.id.parse::<u64>().ok())
+        .map(|m| m.id.as_str())
+        .chain(
+            s.store
+                .channels
+                .values()
+                .filter_map(|c| c.last_message_id.as_deref()),
+        )
+        .filter_map(|id| id.parse::<u64>().ok())
         .max()
         .unwrap_or(0)
         .saturating_add(1);
-    s.store.insert(Message {
+    let message = Message {
         id: id.to_string(),
         channel_id: channel,
         author: s.store.user.clone().unwrap_or_else(local_user),
@@ -22,7 +29,9 @@ pub(super) fn send(s: &mut State, channel: String) {
         timestamp: "Demo · just now".into(),
         embeds: Vec::new(),
         attachments: Vec::new(),
-    });
+    };
+    s.store.activity(&message);
+    s.store.insert(message);
     s.draft.clear();
     s.error.clear();
 }

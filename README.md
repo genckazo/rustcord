@@ -1,6 +1,6 @@
 # Rustcord
 
-A lightweight, privacy-focused Discord desktop client written in Rust, primarily for macOS and also buildable on Linux. Supports guild text channels and DMs, live messages, sending, paginated history, embed cards, received attachments, and experimental guild/DM/group-DM voice calls. File uploads, avatars, threads, search and rich formatting in message text are not implemented.
+A lightweight, privacy-focused Discord desktop client written in Rust, primarily for macOS and also buildable on Linux. Supports guild text channels and DMs, live messages, sending, paginated history, message search, embed cards, received attachments, and experimental guild/DM/group-DM voice calls. File uploads, avatars, threads and rich formatting in message text are not implemented.
 
 **Warning:** Third-party clients using Discord user tokens violate Discord's Terms of Service and may result in account restrictions or termination. This is experimental, unofficial software; use at your own risk. Never share a token: it grants access to your account.
 
@@ -25,6 +25,8 @@ Remember me uses macOS Keychain or Linux Secret Service (an unlocked service and
 Discord does not provide an officially supported user-token login flow for third-party clients. If you accept the risks, open **your own** signed-in Discord web session at `https://discord.com/app`, open browser developer tools → Network, and inspect the `Authorization` request header on a Discord API request (for example a channel messages request). Paste that value into Rustcord's password-style field. Do not use another person's token, paste scripts into the console, or send the token anywhere else. Clear your clipboard afterwards. A bot token is not supported.
 
 Select a server or Direct messages, select a text channel, and type a message; Enter sends. Scroll to the top (or use Load older messages) for history; Scroll to bottom jumps back to recent messages. Mentions are sent with automatic mention parsing disabled.
+
+Use the search field above the conversation to search the selected server (tick **This channel** to limit it to the open channel) or the open DM. Results load 25 at a time (Load more results); click one to open its channel. Search runs on Discord's servers, so the query text is sent to Discord; results are held in memory only and cleared when you switch server or log out. If Discord is still indexing a server, Rustcord retries briefly and then asks you to try again.
 
 ### macOS notifications
 
@@ -61,6 +63,7 @@ mkdir -p screenshots
 target/release/rustcord --snap screenshots/login.png
 target/release/rustcord --scene main --snap screenshots/main.png
 target/release/rustcord --scene voice --snap screenshots/voice.png
+target/release/rustcord --scene search --snap screenshots/search.png
 ```
 
 All scenes render with Rune headlessly, without reading the OS keychain or making network requests; the main and voice scenes use fake data. A usable GPU backend is required (Mesa llvmpipe works on Linux). Never run headless capture tooling against a real logged-in session: diagnostic output may contain visible messages.
