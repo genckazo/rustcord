@@ -140,12 +140,17 @@ pub async fn run(
                 Signal::Dispatch(name, data) => {
                     if name == "READY" { user = data["user"]["id"].as_str().map(str::to_owned); available = true; }
                     if name == "RESUMED" { available = true; }
-                    if name == "VOICE_STATE_UPDATE" && data["user_id"].as_str() == user.as_deref() && last_info.is_some() && state.target.as_ref().is_some_and(|t| data["guild_id"].as_str() == t.guild.as_deref()) {
-                        if data["channel_id"].is_null() { disconnect = true; }
-                        else if let Some(target) = &state.target { if data["channel_id"].as_str() != Some(&target.channel) { disconnect = true; notify_gateway = true; } }
-                    }
+                    if name == "VOICE_STATE_UPDATE" && data["user_id"].as_str() == user.as_deref() && state.target.as_ref().is_some_and(|t| data["guild_id"].as_str() == t.guild.as_deref()) && data["channel_id"].is_null() { disconnect = true; }
                     if let Some(h) = &mut handshake {
-                        match h.apply(&name, &data) {
+                        let result = h.apply(&name, &data);
+                        if state.target.as_ref() != Some(&h.target) || (last_info.is_some() && h.is_pending()) {
+                            driver = None; audio = None; bus.clear(); bus = audio::Bus::new();
+                            generation += 1; last_info = None;
+                            state.target = Some(h.target.clone()); state.speaking.clear();
+                            state.status = "Joining voice…".into();
+                            deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                        }
+                        match result {
                             Ok(Some(info)) if last_info.as_ref() != Some(&info) => {
                                 generation += 1; audio = None; bus.clear();
                                 deadline = tokio::time::Instant::now() + Duration::from_secs(30);

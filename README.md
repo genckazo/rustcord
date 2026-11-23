@@ -52,7 +52,7 @@ One binary crate. Rune is pinned to `b7a08d6aba94dc19bba2170c460b5d9841eec11b`; 
 
 Message caches retain at most 200 newest messages per channel. Older pages beyond that window are discarded; this phase does not provide unbounded historical browsing. REST work is serialized and may queue behind rate limits. Discord's undocumented user-account gateway behavior may change; no live account integration is exercised by tests.
 
-Songbird 0.6.1 has a receive-only build bug: `udp_rx.rs` imports `dashmap` but its manifest enables it only with `gateway`. The vendored, pinned release changes only that feature declaration (`receive` enables `dep:dashmap`); see `vendor/songbird/RUSTCORD-PATCH.md`. No integration feature is enabled as a workaround.
+Songbird 0.6.1 has a receive-only build bug: `udp_rx.rs` imports `dashmap` but its manifest enables it only with `gateway`. The vendored, pinned release enables `dep:dashmap` with `receive` and upgrades its ringbuf requirement to the security-fixed 0.5 series; see `vendor/songbird/RUSTCORD-PATCH.md`. No integration feature is enabled as a workaround. Symphonia's PCM codec is enabled explicitly for raw microphone playback.
 
 ## Checks and deterministic screenshots
 

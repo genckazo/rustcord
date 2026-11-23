@@ -488,7 +488,13 @@ fn chat(s: &State) -> El {
                 })
                 .child(channel_list),
         );
-    let mut main = col().grow(1.0).min_h(0.0).h_full().padding(24.0).gap(18.0);
+    let mut main = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .min_h(0.0)
+        .h_full()
+        .padding(24.0)
+        .gap(18.0);
     if let Some(channel) = s.channel.as_ref().filter(|id| {
         s.store
             .channels
@@ -601,6 +607,7 @@ fn chat(s: &State) -> El {
                         .key("composer")
                         .single_line()
                         .grow(1.0)
+                        .min_w(0.0)
                         .h(46.0)
                         .padding(12.0)
                         .radius(8.0)
@@ -659,12 +666,19 @@ fn header(s: &State) -> El {
         .gap(8.0)
         .w_full()
         .center_y()
-        .child(text(title).font(type_::TITLE).color(t.text).grow(1.0))
+        .child(
+            text(title)
+                .font(type_::TITLE)
+                .color(t.text)
+                .wrap_anywhere()
+                .min_w(0.0),
+        )
         .child(
             text_input(&s.search_draft, type_::BODY)
                 .key("search")
                 .single_line()
-                .w(240.0)
+                .grow(1.0)
+                .min_w(0.0)
                 .h(38.0)
                 .padding(10.0)
                 .radius(8.0)
@@ -805,8 +819,8 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
         } else {
             login(s)
         });
-    if s.voice.target.is_some() || !s.voice.status.is_empty() {
-        root = root.child(voice_panel::panel(s));
+    if let Some(panel) = voice_panel::panel(s) {
+        root = root.child(panel);
     }
     if !s.error.is_empty() {
         root = root.child(

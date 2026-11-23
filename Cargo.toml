@@ -16,6 +16,7 @@ keyring = "4.2"
 rand = "0.10"
 zeroize = "1"
 songbird = { version = "=0.6.1", default-features = false, features = ["driver", "receive", "rustls", "tungstenite"] }
+symphonia = { version = "0.5", default-features = false, features = ["pcm"] }
 cpal = "0.18"
 async-trait = "0.1"
 jiff = "0.2"

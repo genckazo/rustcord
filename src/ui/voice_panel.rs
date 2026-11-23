@@ -39,7 +39,8 @@ pub(super) fn members(s: &State, channel: &str) -> El {
     }
     list
 }
-pub(super) fn panel(s: &State) -> El {
+pub(super) fn panel(s: &State) -> Option<El> {
+    s.voice.target.as_ref()?;
     let t = tok::theme(true);
     let mut panel = col()
         .w_full()
@@ -98,7 +99,7 @@ pub(super) fn panel(s: &State) -> El {
             panel = panel.child(members(s, &target.channel));
         }
     }
-    panel
+    Some(panel)
 }
 pub(super) fn demo(s: &mut State) {
     main_demo(s);

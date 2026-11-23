@@ -277,6 +277,40 @@ impl MediaSource for Microphone {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use songbird::input::{
+        codecs::{get_codec_registry, get_probe},
+        LiveInput,
+    };
+    use symphonia::core::audio::Signal;
+
+    #[test]
+    fn microphone_input_promotes_and_decodes_pcm() {
+        for sample in [0.0, 0.25] {
+            let bus = Bus::new();
+            bus.mic
+                .lock()
+                .unwrap()
+                .extend(std::iter::repeat_n(sample, CAP));
+            let Input::Live(input, _) = bus.input() else {
+                panic!("microphone must be live")
+            };
+            let LiveInput::Parsed(mut parsed) =
+                input.promote(get_codec_registry(), get_probe()).unwrap()
+            else {
+                panic!("microphone must be playable")
+            };
+            let packet = parsed.format.next_packet().unwrap();
+            let decoded = parsed.decoder.decode(&packet).unwrap();
+            assert_eq!(decoded.spec().rate, 48_000);
+            assert_eq!(decoded.spec().channels.count(), 2);
+            let symphonia::core::audio::AudioBufferRef::F32(buffer) = decoded else {
+                panic!("expected f32")
+            };
+            assert!(buffer.frames() > 0);
+            assert!(buffer.chan(0).iter().all(|value| *value == sample));
+            assert!(buffer.chan(1).iter().all(|value| *value == sample));
+        }
+    }
     #[test]
     fn bounded_mix_clips_and_deafen_discards() {
         let bus = Bus::new();

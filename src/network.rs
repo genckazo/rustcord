@@ -166,6 +166,71 @@ mod voice_tests {
     use std::{sync::Arc, time::Duration};
 
     #[tokio::test]
+    async fn moderator_moves_never_send_gateway_leave() {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            for server_first in [false, true] {
+                let (command_tx, command_rx) = mpsc::channel(16);
+                let (signal_tx, signal_rx) = mpsc::channel(16);
+                let (gateway_tx, mut gateway_rx) = mpsc::channel(16);
+                let (tx, mut rx) = mpsc::channel(32);
+                let task = tokio::spawn(voice::run(
+                    command_rx,
+                    signal_rx,
+                    gateway_tx,
+                    Events {
+                        tx,
+                        waker: Arc::new(|| {}),
+                    },
+                ));
+                signal_tx
+                    .send(Signal::Dispatch("READY".into(), json!({"user":{"id":"1"}})))
+                    .await
+                    .unwrap();
+                rx.recv().await.unwrap();
+                command_tx
+                    .send(Voice::Join(Target {
+                        guild: Some("10".into()),
+                        channel: "20".into(),
+                    }))
+                    .await
+                    .unwrap();
+                assert_eq!(gateway_rx.recv().await.unwrap()["d"]["channel_id"], "20");
+                rx.recv().await.unwrap();
+                // A null endpoint keeps this manager test device- and network-free.
+                // Fresh connected-handshake pairing is covered in handshake's tests.
+                let server = (
+                    "VOICE_SERVER_UPDATE",
+                    json!({"guild_id":"10","endpoint":null}),
+                );
+                let moved = (
+                    "VOICE_STATE_UPDATE",
+                    json!({"user_id":"1","guild_id":"10","channel_id":"30","session_id":"moved"}),
+                );
+                let signals = if server_first {
+                    [server, moved]
+                } else {
+                    [moved, server]
+                };
+                for (name, data) in signals {
+                    signal_tx
+                        .send(Signal::Dispatch(name.into(), data))
+                        .await
+                        .unwrap();
+                    rx.recv().await.unwrap();
+                    assert!(gateway_rx.try_recv().is_err());
+                }
+                command_tx.send(Voice::Mute(true)).await.unwrap();
+                let payload = gateway_rx.recv().await.unwrap();
+                assert_eq!(payload["d"]["channel_id"], "30");
+                assert_eq!(payload["d"]["guild_id"], "10");
+                task.abort();
+            }
+        })
+        .await
+        .expect("voice manager stalled");
+    }
+
+    #[tokio::test]
     async fn voice_commands_reset_resume_and_bad_endpoint() {
         tokio::time::timeout(Duration::from_secs(3), async {
             let (command_tx, command_rx) = mpsc::channel(16);

@@ -1,6 +1,10 @@
 # cargo-audit configuration. Keep the ignore list in sync with deny.toml.
 [advisories]
 ignore = [
+    # songbird -> derivative: unmaintained compile-time macros; no fixed release.
+    "RUSTSEC-2024-0388",
+    # songbird -> serde-aux -> chrono: timestamp serde only; no fixed release.
+    "RUSTSEC-2026-0543",
     "RUSTSEC-2026-0370", # zvariant unmaintained; transitive via rune/keyring (zbus 5)
     "RUSTSEC-2026-0371", # zbus_names unmaintained; transitive via rune/keyring (zbus 5)
     "RUSTSEC-2026-0372", # zvariant_derive unmaintained; transitive via rune/keyring (zbus 5)

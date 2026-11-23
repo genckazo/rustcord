@@ -15,6 +15,12 @@ targets = [
 unmaintained = "all"
 yanked = "deny"
 ignore = [
+    # songbird 0.6.1 -> derivative: unmaintained derive macros, no fixed release;
+    # retained for the pinned driver, compile-time only.
+    { id = "RUSTSEC-2024-0388", reason = "songbird requires derivative; compile-time macros, no fixed release" },
+    # songbird -> serde-aux -> chrono: unmaintained, no fixed release.
+    # Used for upstream timestamp serde, not for Rustcord's timestamp display.
+    { id = "RUSTSEC-2026-0543", reason = "songbird serde-aux requires chrono; no fixed release, timestamp serde only" },
     # zbus 5.x helper crates, folded into zbus 6. Pulled in on Linux only, via
     # Rune's accesskit_unix (pinned git rev) and keyring's Secret Service store.
     # No upgrade is possible until both move to zbus 6. Keep in sync with
@@ -43,8 +49,18 @@ allow = [
     "Zlib",
 ]
 # MPL-2.0 is file-level copyleft: fine to link unmodified, so it is allowed
-# only for the crates Rune already pulls in rather than globally.
+# only for named media/voice dependencies rather than globally.
 exceptions = [
+    # Rustcord -> symphonia (PCM feature): file-level copyleft codec, linked
+    # unmodified to decode Songbird's raw microphone input.
+    { allow = ["MPL-2.0"], crate = "symphonia-codec-pcm" },
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs: DAVE encryption;
+    # accepted as unmodified file-level-copyleft dependencies, not a global allow.
+    { allow = ["MPL-2.0"], crate = "hpke-rs" },
+    # Same DAVE HPKE path, the shared crypto traits; linked unmodified.
+    { allow = ["MPL-2.0"], crate = "hpke-rs-crypto" },
+    # Same DAVE HPKE path, the RustCrypto backend; linked unmodified.
+    { allow = ["MPL-2.0"], crate = "hpke-rs-rust-crypto" },
     { allow = ["MPL-2.0"], crate = "opuscule" },
     { allow = ["MPL-2.0"], crate = "symphonia" },
     { allow = ["MPL-2.0"], crate = "symphonia-codec-vorbis" },

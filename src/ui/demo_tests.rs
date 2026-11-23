@@ -99,3 +99,17 @@ fn demo_voice_join_toggles_move_leave_and_invalid_target() {
     assert!(s.error.is_empty());
     assert!(s.network.is_none());
 }
+
+#[test]
+fn voice_panel_hidden_without_target_in_demo_and_real_modes() {
+    let mut s = State::default();
+    voice_panel::demo(&mut s);
+    assert!(voice_panel::panel(&s).is_some());
+    s.voice_command(Voice::Leave);
+    assert!(!s.voice.status.is_empty());
+    assert!(voice_panel::panel(&s).is_none());
+    s.demo = false;
+    assert!(voice_panel::panel(&s).is_none());
+    s.voice.status = "Voice connection failed".into();
+    assert!(voice_panel::panel(&s).is_none());
+}

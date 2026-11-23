@@ -4935,9 +4935,9 @@ dependencies = [
 
 [[package]]
 name = "ringbuf"
-version = "0.4.8"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe47b720588c8702e34b5979cb3271a8b1842c7cb6f57408efa70c779363488c"
+checksum = "b58b631e416dd7d84549d7e6a50f767e111f9b03e30d04f40072f6618f386aaf"
 dependencies = [
  "crossbeam-utils",
  "portable-atomic",
@@ -5265,6 +5265,7 @@ dependencies = [
  "serde",
  "serde_json",
  "songbird",
+ "symphonia",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "zeroize",
@@ -6137,11 +6138,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5773a4c030a19d9bfaa090f49746ff35c75dfddfa700df7a5939d5e076a57039"
 dependencies = [
  "lazy_static",
+ "symphonia-codec-pcm",
  "symphonia-codec-vorbis",
  "symphonia-core",
  "symphonia-format-mkv",
  "symphonia-format-ogg",
  "symphonia-metadata",
+]
+
+[[package]]
+name = "symphonia-codec-pcm"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e89d716c01541ad3ebe7c91ce4c8d38a7cf266a3f7b2f090b108fb0cb031d95"
+dependencies = [
+ "log",
+ "symphonia-core",
 ]
 
 [[package]]
@@ -6286,7 +6298,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.6",
  "windows-sys 0.61.2",
