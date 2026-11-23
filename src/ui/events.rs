@@ -249,6 +249,11 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
             Event::OpenedDm(result) => opened_dm(s, result, tx),
         }
     }
+    // Wake once when the oldest typing indicator expires instead of a fixed interval;
+    // a `None` re-arm disarms the pending tick when the last typer clears.
+    if let Some(network) = s.network.as_ref() {
+        let _ = network.tick.try_send(s.store.typing.next_expiry());
+    }
     changed
 }
 fn opened_dm(s: &mut State, result: Result<Channel, String>, tx: &mut Tx) {
