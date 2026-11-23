@@ -43,16 +43,23 @@ pub async fn run(
             Ok(()) => {
                 backoff = 1;
             }
-            Err(Failure::Fatal) => {
+            Err(Failure::Fatal(reason)) => {
                 let _ = voice.send(Signal::Reset).await;
-                events
-                    .send(Event::Status(
-                        "Authentication rejected. Log out and check your token.".into(),
-                    ))
-                    .await;
+                events.send(Event::Status(reason)).await;
                 return;
             }
-            Err(Failure::Retry) => {}
+            Err(Failure::Retry(reason)) => {
+                let _ = voice.send(Signal::Reset).await;
+                while commands.try_recv().is_ok() {}
+                events
+                    .send(Event::Status(format!(
+                        "{reason} · reconnecting in {backoff}s…"
+                    )))
+                    .await;
+                tokio::time::sleep(Duration::from_secs(backoff)).await;
+                backoff = (backoff * 2).min(60);
+                continue;
+            }
         }
         let _ = voice.send(Signal::Reset).await;
         while commands.try_recv().is_ok() {}
@@ -64,8 +71,8 @@ pub async fn run(
     }
 }
 enum Failure {
-    Retry,
-    Fatal,
+    Retry(String),
+    Fatal(String),
 }
 async fn connection(
     token: &str,
@@ -74,6 +81,7 @@ async fn connection(
     commands: &mut mpsc::Receiver<Value>,
     voice: &mpsc::Sender<Signal>,
 ) -> Result<(), Failure> {
+    crate::ensure_tls_provider();
     let url = session
         .url
         .as_deref()
@@ -81,22 +89,29 @@ async fn connection(
         .unwrap_or_else(|| gateway_url("wss://gateway.discord.gg").unwrap());
     let (mut socket, _) = timeout(Duration::from_secs(30), connect_async(url))
         .await
-        .map_err(|_| Failure::Retry)?
-        .map_err(|_| Failure::Retry)?;
+        .map_err(|_| Failure::Retry("Gateway connection timed out".into()))?
+        .map_err(|e| Failure::Retry(format!("Gateway connection failed: {e}")))?;
     let hello = timeout(Duration::from_secs(30), socket.next())
         .await
-        .map_err(|_| Failure::Retry)?
-        .ok_or(Failure::Retry)?
-        .map_err(|_| Failure::Retry)?;
-    let hello: Payload = serde_json::from_str(hello.to_text().map_err(|_| Failure::Retry)?)
-        .map_err(|_| Failure::Retry)?;
+        .map_err(|_| Failure::Retry("Gateway hello timed out".into()))?
+        .ok_or_else(|| Failure::Retry("Gateway closed before hello".into()))?
+        .map_err(|e| Failure::Retry(format!("Gateway read error: {e}")))?;
+    let hello: Payload = serde_json::from_str(
+        hello
+            .to_text()
+            .map_err(|_| Failure::Retry("Unexpected binary gateway hello".into()))?,
+    )
+    .map_err(|_| Failure::Retry("Invalid gateway hello payload".into()))?;
     if hello.op != 10 {
-        return Err(Failure::Retry);
+        return Err(Failure::Retry(format!(
+            "Unexpected gateway op {}",
+            hello.op
+        )));
     }
     let interval = hello.d["heartbeat_interval"]
         .as_u64()
         .filter(|n| *n > 0)
-        .ok_or(Failure::Retry)?;
+        .ok_or_else(|| Failure::Retry("Missing gateway heartbeat interval".into()))?;
     let interval = Duration::from_millis(interval);
     let mut next = Instant::now() + interval.mul_f64(rand::random::<f64>());
     let mut awaiting_ack = false;
@@ -108,30 +123,36 @@ async fn connection(
     socket
         .send(Message::Text(auth.to_string().into()))
         .await
-        .map_err(|_| Failure::Retry)?;
+        .map_err(|_| Failure::Retry("Gateway identify send failed".into()))?;
     loop {
         tokio::select! {
             Some(command) = commands.recv() => {
-                socket.send(Message::Text(command.to_string().into())).await.map_err(|_| Failure::Retry)?;
+                socket.send(Message::Text(command.to_string().into())).await.map_err(|_| Failure::Retry("Gateway command send failed".into()))?;
             }
             _ = tokio::time::sleep_until(next) => {
-                if awaiting_ack { return Err(Failure::Retry); }
-                socket.send(Message::Text(json!({"op":1,"d":session.seq}).to_string().into())).await.map_err(|_| Failure::Retry)?;
+                if awaiting_ack { return Err(Failure::Retry("Gateway heartbeat timed out".into())); }
+                socket.send(Message::Text(json!({"op":1,"d":session.seq}).to_string().into())).await.map_err(|_| Failure::Retry("Gateway heartbeat send failed".into()))?;
                 awaiting_ack = true;
                 next = Instant::now() + interval;
             }
             frame = socket.next() => {
-                let frame = frame.ok_or(Failure::Retry)?.map_err(|_| Failure::Retry)?;
+                let frame = frame
+                    .ok_or_else(|| Failure::Retry("Gateway stream ended".into()))?
+                    .map_err(|e| Failure::Retry(format!("Gateway read error: {e}")))?;
                 match frame {
                     Message::Close(close) => {
-                        let code = close.map(|c| u16::from(c.code)).unwrap_or(1000);
-                        if matches!(code, 4004 | 4010..=4014) { return Err(Failure::Fatal); }
+                        let code = close.as_ref().map(|c| u16::from(c.code)).unwrap_or(1000);
+                        if matches!(code, 4004 | 4010..=4014) {
+                            return Err(Failure::Fatal(format!(
+                                "Authentication rejected (code {code}). Log out and check your token."
+                            )));
+                        }
                         if matches!(code, 4007 | 4009) { *session = Session::default(); }
-                        return Err(Failure::Retry);
+                        return Err(Failure::Retry(format!("Gateway closed (code {code})")));
                     }
-                    Message::Ping(data) => { socket.send(Message::Pong(data)).await.map_err(|_| Failure::Retry)?; }
+                    Message::Ping(data) => { socket.send(Message::Pong(data)).await.map_err(|_| Failure::Retry("Gateway pong failed".into()))?; }
                     Message::Text(text) => {
-                        let payload: Payload = serde_json::from_str(&text).map_err(|_| Failure::Retry)?;
+                        let payload: Payload = serde_json::from_str(&text).map_err(|_| Failure::Retry("Invalid gateway event payload".into()))?;
                         if let Some(seq) = payload.s { session.seq = Some(seq); }
                         match payload.op {
                             0 => {
@@ -145,7 +166,7 @@ async fn connection(
                                 events.send(Event::Dispatch(name, payload.d)).await;
                             }
                             1 => {
-                                socket.send(Message::Text(json!({"op":1,"d":session.seq}).to_string().into())).await.map_err(|_| Failure::Retry)?;
+                                socket.send(Message::Text(json!({"op":1,"d":session.seq}).to_string().into())).await.map_err(|_| Failure::Retry("Gateway heartbeat send failed".into()))?;
                                 awaiting_ack = true;
                             }
                             7 => return Ok(()),
@@ -198,5 +219,12 @@ mod tests {
         assert!(gateway_url("wss://gateway.discord.gg.evil.test").is_none());
         assert!(gateway_url("ws://gateway.discord.gg").is_none());
         assert!(gateway_url("wss://gateway.discord.gg/").is_some());
+    }
+    #[test]
+    fn tls_provider_initializes_rustls_client_config() {
+        crate::ensure_tls_provider();
+        let _config = rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth();
     }
 }

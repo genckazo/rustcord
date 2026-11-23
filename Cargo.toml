@@ -8,6 +8,7 @@ publish = false
 rune = { git = "https://github.com/anomalyco/rune", rev = "b7a08d6aba94dc19bba2170c460b5d9841eec11b", default-features = false, features = ["accessibility", "dbus", "embedded-fonts", "metal-backend", "ogg-audio", "tooling"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
