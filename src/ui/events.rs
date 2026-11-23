@@ -1,7 +1,7 @@
 use super::State;
 use crate::{
     model::{Channel, Guild, Message, User, VoiceState},
-    network::Event,
+    network::{Command, Event},
     notifications,
     search::Query,
     store::{Direction, Store},
@@ -242,6 +242,10 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
             },
             Event::OpenedDm(result) => opened_dm(s, result, tx),
         }
+    }
+    // Wake once when the oldest typing indicator expires instead of a fixed interval.
+    if let (Some(at), Some(network)) = (s.store.typing.next_expiry(), s.network.as_ref()) {
+        let _ = network.tx.try_send(Command::Tick(at));
     }
     changed
 }

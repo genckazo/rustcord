@@ -6,11 +6,14 @@ use crate::{
     store::{Direction, HISTORY_LIMIT},
 };
 use serde_json::Value;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
 pub enum Command {
     Typing(String),
+    /// Arm a one-shot TypingTick wake at the next typing expiry.
+    Tick(Instant),
     History {
         channel: String,
         cursor: Option<String>,
@@ -110,19 +113,18 @@ impl Network {
                 ));
                 let gateway =
                     tokio::spawn(gateway::run(token, events.clone(), gateway_rx, signal_tx));
-                let ticks = async {
-                    let mut timer = tokio::time::interval(std::time::Duration::from_millis(500));
-                    loop {
-                        timer.tick().await;
-                        events.send(Event::TypingTick).await;
-                    }
-                };
+                let (tick_tx, tick_rx) = mpsc::channel::<Instant>(4);
+                let ticks = typing_ticks(tick_rx, events.clone());
                 let worker = async {
                     while let Some(command) = commands.recv().await {
                         let event = match command {
                             Command::OpenDm(user) => Event::OpenedDm(api.open_dm(&user).await),
                             Command::Typing(channel) => {
                                 let _ = api.typing(&channel).await;
+                                continue;
+                            }
+                            Command::Tick(at) => {
+                                let _ = tick_tx.try_send(at);
                                 continue;
                             }
                             Command::History {
@@ -179,11 +181,73 @@ impl Network {
         }
     }
 }
+async fn typing_ticks(mut rx: mpsc::Receiver<Instant>, events: Events) {
+    let mut deadline: Option<Instant> = None;
+    loop {
+        deadline = match deadline {
+            // A newer deadline re-arms; firing wakes the UI once to expire typings.
+            Some(at) => tokio::select! {
+                _ = tokio::time::sleep_until(at.into()) => {
+                    events.send(Event::TypingTick).await;
+                    rx.recv().await
+                }
+                next = rx.recv() => next,
+            },
+            None => rx.recv().await,
+        };
+        let Some(at) = deadline else { break };
+        // Collapse any queued re-arms into the latest deadline.
+        let mut latest = at;
+        while let Ok(next) = rx.try_recv() {
+            latest = next;
+        }
+        deadline = Some(latest);
+    }
+}
+
 impl Drop for Network {
     fn drop(&mut self) {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{sync::Arc, time::Duration};
+
+    #[tokio::test]
+    async fn typing_ticks_fire_once_per_deadline() {
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = {
+            let wakes = wakes.clone();
+            Arc::new(move || {
+                wakes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+        };
+        let (tx, mut rx) = mpsc::channel(8);
+        let (tick_tx, tick_rx) = mpsc::channel(4);
+        let task = tokio::spawn(typing_ticks(tick_rx, Events { tx, waker: counter }));
+        // Idle: an armed-free driver never wakes the UI.
+        assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv())
+            .await
+            .is_err());
+        tick_tx
+            .send(Instant::now() + Duration::from_millis(50))
+            .await
+            .unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), rx.recv()).await,
+            Ok(Some(Event::TypingTick))
+        ));
+        assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // One wake per deadline: nothing follows the fired tick.
+        assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv())
+            .await
+            .is_err());
+        task.abort();
     }
 }
 

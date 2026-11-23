@@ -79,6 +79,13 @@ impl Typing {
         });
         changed
     }
+    pub fn next_expiry(&self) -> Option<Instant> {
+        self.channels
+            .values()
+            .flat_map(|users| users.values())
+            .map(|(_, expires)| *expires)
+            .min()
+    }
     pub fn label(&self, channel: &str, now: Instant) -> String {
         let names: Vec<_> = self
             .channels
@@ -137,6 +144,22 @@ mod tests {
         typing.receive(event("2"), None, None, now);
         typing.remove_channel("1");
         assert_eq!(typing.label("1", now), "");
+    }
+    #[test]
+    fn next_expiry_is_the_oldest_pending() {
+        let now = Instant::now();
+        let mut typing = Typing::default();
+        assert_eq!(typing.next_expiry(), None);
+        typing.receive(event("1"), None, None, now);
+        let mut older = event("2");
+        older.channel_id = "2".into();
+        typing.receive(older, None, None, now - Duration::from_secs(3));
+        assert_eq!(
+            typing.next_expiry(),
+            Some(now - Duration::from_secs(3) + EXPIRY)
+        );
+        typing.clear("2", "2");
+        assert_eq!(typing.next_expiry(), Some(now + EXPIRY));
     }
     #[test]
     fn names_and_counts() {
