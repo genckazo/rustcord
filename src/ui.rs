@@ -322,6 +322,9 @@ fn connect(s: &mut State, _: &mut Tx) {
     s.error.clear();
     s.status = "Connecting…".into();
 }
+fn in_session(s: &State) -> bool {
+    s.network.is_some() || s.demo
+}
 fn logout(s: &mut State, _: &mut Tx) {
     s.network = None;
     s.store = Store::default();
@@ -996,15 +999,12 @@ fn results(s: &State, search: &Search) -> El {
 }
 fn view(s: &State, _: &mut Cx<State>) -> El {
     let t = tok::theme(true);
-    let mut root = col()
-        .w_full()
-        .h_full()
-        .fill(t.bg)
-        .child(if s.network.is_some() || s.demo {
-            chat(s)
-        } else {
-            login(s)
-        });
+    let mut root =
+        col()
+            .w_full()
+            .h_full()
+            .fill(t.bg)
+            .child(if in_session(s) { chat(s) } else { login(s) });
     if let Some(panel) = voice_panel::panel(s) {
         root = root.child(panel);
     }
@@ -1018,25 +1018,26 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
                 .padding(10.0),
         );
     }
-    root.child(
-        row()
-            .w_full()
-            .h(44.0)
-            .px(16.0)
-            .center_y()
-            .gap(16.0)
-            .fill(t.card)
-            .child(
-                text(format!("● {}", s.status))
-                    .font(type_::BODY)
-                    .color(t.text_secondary)
-                    .grow(1.0),
-            )
-            .child(
-                el().w(100.0)
-                    .child(button("logout", "Log out", false, logout)),
-            ),
-    )
+    let mut bar = row()
+        .w_full()
+        .h(44.0)
+        .px(16.0)
+        .center_y()
+        .gap(16.0)
+        .fill(t.card)
+        .child(
+            text(format!("● {}", s.status))
+                .font(type_::BODY)
+                .color(t.text_secondary)
+                .grow(1.0),
+        );
+    if in_session(s) {
+        bar = bar.child(
+            el().w(100.0)
+                .child(button("logout", "Log out", false, logout)),
+        );
+    }
+    root.child(bar)
 }
 fn on_key(s: &mut State, ev: &KeyEvent, _: &mut Tx) -> bool {
     s.escape_key(&ev.key)
@@ -1333,5 +1334,19 @@ mod tests {
         start_search(&mut s);
         assert!(!s.escape_key(&Key::Tab));
         assert!(s.search.is_some());
+    }
+
+    #[test]
+    fn logout_button_only_shows_in_session() {
+        let mut s = State::default();
+        assert!(!in_session(&s));
+        s.status = "Offline".into();
+        assert!(!in_session(&s));
+        let (network, _commands) = Network::mock();
+        s.network = Some(network);
+        assert!(in_session(&s));
+        s.network = None;
+        s.demo = true;
+        assert!(in_session(&s));
     }
 }
