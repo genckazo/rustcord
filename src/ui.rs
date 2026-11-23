@@ -1,0 +1,518 @@
+mod events;
+
+use crate::{
+    auth,
+    model::{Channel, Guild, Message, User},
+    network::{Command, Network},
+    store::Store,
+};
+use rune::{
+    col, el, row, text, text_input,
+    tok::{self, type_},
+    AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, Waker,
+};
+use std::{cell::Cell, collections::HashSet, rc::Rc};
+use zeroize::Zeroizing;
+
+pub struct State {
+    token: TextEdit,
+    draft: TextEdit,
+    remember: bool,
+    network: Option<Network>,
+    waker: Option<Waker>,
+    store: Store,
+    status: String,
+    error: String,
+    guild: Option<String>,
+    channel: Option<String>,
+    loading: HashSet<String>,
+    exhausted: HashSet<String>,
+    demo: bool,
+    sending: bool,
+    scroll_top: Rc<Cell<bool>>,
+}
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            token: TextEdit::new("").secure(),
+            draft: TextEdit::default(),
+            remember: false,
+            network: None,
+            waker: None,
+            store: Store::default(),
+            status: "Offline".into(),
+            error: String::new(),
+            guild: None,
+            channel: None,
+            loading: HashSet::new(),
+            exhausted: HashSet::new(),
+            demo: false,
+            sending: false,
+            scroll_top: Rc::new(Cell::new(false)),
+        }
+    }
+}
+impl State {
+    fn command(&mut self, command: Command) -> bool {
+        if self
+            .network
+            .as_ref()
+            .is_some_and(|n| n.tx.try_send(command).is_ok())
+        {
+            true
+        } else {
+            self.error = "Network queue busy; please try again.".into();
+            false
+        }
+    }
+    fn history(&mut self, channel: String, older: bool) {
+        if self.demo
+            || self.loading.contains(&channel)
+            || (older && self.exhausted.contains(&channel))
+        {
+            return;
+        }
+        let before = if older {
+            self.store
+                .messages
+                .get(&channel)
+                .and_then(|ms| ms.front())
+                .map(|m| m.id.clone())
+        } else {
+            None
+        };
+        if self.command(Command::History {
+            channel: channel.clone(),
+            before,
+        }) {
+            self.loading.insert(channel);
+        }
+    }
+    fn select(&mut self, channel: String, tx: &mut Tx) {
+        self.channel = Some(channel.clone());
+        self.draft.clear();
+        if !self.store.messages.contains_key(&channel) {
+            self.history(channel, false);
+        }
+        tx.scroll_to_bottom("transcript");
+    }
+}
+fn connect(s: &mut State, _: &mut Tx) {
+    if s.token.text.trim().is_empty() {
+        return;
+    }
+    let Some(waker) = s.waker.clone() else {
+        return;
+    };
+    let token = Zeroizing::new(s.token.text.trim().to_owned());
+    let result = if s.remember {
+        auth::save(&token)
+    } else {
+        auth::clear()
+    };
+    if result.is_err() && s.remember {
+        s.error = "Cannot save to OS keychain. Disable Remember me to continue.".into();
+        return;
+    }
+    s.network = Some(Network::start(token, waker));
+    s.token.clear();
+    s.error.clear();
+    s.status = "Connecting…".into();
+}
+fn logout(s: &mut State, _: &mut Tx) {
+    s.network = None;
+    s.store = Store::default();
+    s.guild = None;
+    s.channel = None;
+    s.token.clear();
+    s.draft.clear();
+    s.loading.clear();
+    s.exhausted.clear();
+    s.sending = false;
+    s.demo = false;
+    s.status = "Offline".into();
+    s.error = if auth::clear().is_err() {
+        "Could not clear keychain. Remove rustcord/discord-token manually from your OS keychain."
+            .into()
+    } else {
+        String::new()
+    };
+}
+fn send(s: &mut State, _: &mut Tx) {
+    if s.demo || s.sending || s.draft.text.trim().is_empty() {
+        return;
+    }
+    if s.draft.text.chars().count() > 2000 {
+        s.error = "Messages must be 2,000 characters or fewer.".into();
+        return;
+    }
+    if let Some(channel) = s.channel.clone() {
+        s.sending = s.command(Command::Send {
+            channel,
+            content: s.draft.text.clone(),
+        });
+    }
+}
+fn label(value: impl Into<String>) -> El {
+    text(value.into())
+        .font(type_::BODY)
+        .color(tok::theme(true).text)
+}
+fn button(
+    key: impl Into<String>,
+    value: impl Into<String>,
+    selected: bool,
+    action: impl Fn(&mut State, &mut Tx) + 'static,
+) -> El {
+    let t = tok::theme(true);
+    el().key(key.into())
+        .role("button")
+        .focusable(true)
+        .w_full()
+        .min_h(36.0)
+        .px(12.0)
+        .py(8.0)
+        .radius(7.0)
+        .fill(if selected { t.control_off } else { t.card })
+        .hover(t.hover)
+        .on_press_tx(action)
+        .child(label(value))
+}
+fn login(s: &State) -> El {
+    let t = tok::theme(true);
+    let field = text_input(&s.token, type_::BODY)
+        .key("token")
+        .single_line()
+        .secure()
+        .h(44.0)
+        .w_full()
+        .padding(12.0)
+        .fill(t.bg)
+        .radius(7.0)
+        .color(t.text)
+        .placeholder("Your Discord user token", t.text_secondary)
+        .on_edit(|s: &mut State| &mut s.token)
+        .on_submit(connect);
+    col().grow(1.0).w_full().center().gap(16.0)
+        .child(text("Rustcord").font(rune::TextStyle::new(30.0, 600.0)).color(t.text))
+        .child(label("A quieter place for your conversations."))
+        .child(col().w(420.0).padding(28.0).gap(18.0).radius(14.0).fill(t.card).border(1.0, t.card_border)
+            .child(label("Sign in with your Discord token"))
+            .child(field)
+            .child(button("remember", if s.remember { "[✓] Remember me in the OS keychain" } else { "[ ] Remember me in the OS keychain" }, s.remember, |s, _| s.remember = !s.remember))
+            .child(button("connect", "Connect →", true, connect))
+            .child(text("Third-party user-token clients violate Discord’s terms. Your account may be restricted or terminated.").font(type_::BODY).color(t.text_secondary).wrap().w_full()))
+        .child(text("No telemetry · No message files · Text chat only").font(type_::BODY).color(t.text_secondary))
+}
+fn chat(s: &State) -> El {
+    let t = tok::theme(true);
+    let mut servers = col()
+        .w(185.0)
+        .h_full()
+        .padding(14.0)
+        .gap(10.0)
+        .fill(t.bg)
+        .child(text("Rustcord").font(type_::TITLE).color(t.text))
+        .child(button(
+            "dms",
+            "Direct messages",
+            s.guild.is_none(),
+            |s, _| {
+                s.guild = None;
+                s.channel = None;
+            },
+        ));
+    let mut guilds: Vec<_> = s.store.guilds.values().collect();
+    guilds.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut list = col().gap(6.0).w_full();
+    for guild in guilds {
+        let id = guild.id.clone();
+        list = list.child(button(
+            format!("guild-{id}"),
+            &guild.name,
+            s.guild.as_ref() == Some(&id),
+            move |s, _| {
+                s.guild = Some(id.clone());
+                s.channel = None;
+                if s.store.channels_for(Some(&id)).is_empty() {
+                    s.command(Command::Channels(id.clone()));
+                }
+            },
+        ));
+    }
+    servers = servers.child(
+        col()
+            .grow(1.0)
+            .min_h(0.0)
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .child(list),
+    );
+    let channels = s.store.channels_for(s.guild.as_deref());
+    let mut channel_list = col().w_full().gap(6.0);
+    let channel_button = |c: &Channel| {
+        let id = c.id.clone();
+        button(
+            format!("channel-{id}"),
+            format!("# {}", c.label()),
+            s.channel.as_ref() == Some(&id),
+            move |s, tx| s.select(id.clone(), tx),
+        )
+    };
+    for c in channels
+        .iter()
+        .filter(|c| c.is_text() && c.parent_id.is_none())
+    {
+        channel_list = channel_list.child(channel_button(c));
+    }
+    for category in channels.iter().filter(|c| c.kind == 4) {
+        channel_list = channel_list.child(
+            text(category.label().to_uppercase())
+                .font(type_::BODY)
+                .color(t.text_secondary)
+                .pt(20.0),
+        );
+        for c in channels
+            .iter()
+            .filter(|c| c.is_text() && c.parent_id.as_ref() == Some(&category.id))
+        {
+            channel_list = channel_list.child(channel_button(c));
+        }
+    }
+    let channels = col()
+        .w(220.0)
+        .h_full()
+        .padding(16.0)
+        .gap(16.0)
+        .fill(t.card)
+        .child(label(if s.guild.is_some() {
+            "CHANNELS"
+        } else {
+            "DIRECT MESSAGES"
+        }))
+        .child(
+            col()
+                .grow(1.0)
+                .min_h(0.0)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(channel_list),
+        );
+    let mut main = col().grow(1.0).min_h(0.0).h_full().padding(24.0).gap(18.0);
+    if let Some(channel) = &s.channel {
+        main = main.child(
+            text(
+                s.store
+                    .channels
+                    .get(channel)
+                    .map(|c| c.label())
+                    .unwrap_or_default(),
+            )
+            .font(type_::TITLE)
+            .color(t.text),
+        );
+        let mut messages = col().w_full().gap(18.0).py(12.0);
+        if s.loading.contains(channel) {
+            messages = messages.child(label("Loading messages…"));
+        } else if !s.exhausted.contains(channel) {
+            messages = messages.child(button("older", "Load older messages", false, |s, _| {
+                if let Some(id) = s.channel.clone() {
+                    s.history(id, true);
+                }
+            }));
+        }
+        if let Some(items) = s.store.messages.get(channel) {
+            for m in items {
+                messages = messages.child(
+                    col()
+                        .key(format!("message-{}", m.id))
+                        .w_full()
+                        .gap(6.0)
+                        .child(
+                            row()
+                                .gap(12.0)
+                                .child(
+                                    text(m.author.name())
+                                        .font(type_::LABEL)
+                                        .color(tok::accent(0, true)),
+                                )
+                                .child(
+                                    text(&m.timestamp).font(type_::BODY).color(t.text_secondary),
+                                ),
+                        )
+                        .child(label(&m.content).wrap_anywhere().w_full()),
+                );
+            }
+        }
+        let top = s.scroll_top.clone();
+        let waker = s.waker.clone();
+        main = main.child(
+            col()
+                .key("transcript")
+                .grow(1.0)
+                .min_h(0.0)
+                .w_full()
+                .scroll(ScrollSpec { stick_bottom: true })
+                .on_scroll_offset(move |pos| {
+                    if pos.offset[1] < 1.0 && pos.max[1] > 1.0 {
+                        top.set(true);
+                        if let Some(waker) = &waker {
+                            waker();
+                        }
+                    }
+                })
+                .child(messages),
+        );
+        main = main.child(
+            row()
+                .gap(8.0)
+                .w_full()
+                .child(
+                    text_input(&s.draft, type_::BODY)
+                        .key("composer")
+                        .single_line()
+                        .grow(1.0)
+                        .h(46.0)
+                        .padding(12.0)
+                        .radius(8.0)
+                        .fill(t.card)
+                        .color(t.text)
+                        .placeholder("Write a message…", t.text_secondary)
+                        .on_edit(|s: &mut State| &mut s.draft)
+                        .on_submit(send),
+                )
+                .child(el().w(90.0).child(button(
+                    "send",
+                    if s.sending { "Sending…" } else { "Send" },
+                    true,
+                    send,
+                ))),
+        );
+        main = main.child(button("bottom", "↓ Scroll to bottom", false, |_, tx| {
+            tx.scroll_to_bottom("transcript")
+        }));
+    } else {
+        main = main
+            .center()
+            .child(label("Choose a conversation to begin."));
+    }
+    row()
+        .grow(1.0)
+        .min_h(0.0)
+        .w_full()
+        .child(servers)
+        .child(channels)
+        .child(main)
+}
+fn view(s: &State, _: &mut Cx<State>) -> El {
+    let t = tok::theme(true);
+    let mut root = col()
+        .w_full()
+        .h_full()
+        .fill(t.bg)
+        .child(if s.network.is_some() || s.demo {
+            chat(s)
+        } else {
+            login(s)
+        });
+    if !s.error.is_empty() {
+        root = root.child(
+            text(&s.error)
+                .font(type_::BODY)
+                .color(rune::oklch(0.75, 0.13, 25.0))
+                .wrap()
+                .w_full()
+                .padding(10.0),
+        );
+    }
+    root.child(
+        row()
+            .w_full()
+            .h(44.0)
+            .px(16.0)
+            .center_y()
+            .gap(16.0)
+            .fill(t.card)
+            .child(
+                text(format!("● {}", s.status))
+                    .font(type_::BODY)
+                    .color(t.text_secondary)
+                    .grow(1.0),
+            )
+            .child(
+                el().w(100.0)
+                    .child(button("logout", "Log out", false, logout)),
+            ),
+    )
+}
+fn demo(s: &mut State) {
+    s.demo = true;
+    s.status = "Demo · no network".into();
+    s.guild = Some("100".into());
+    s.channel = Some("102".into());
+    let guild: Guild = serde_json::from_value(serde_json::json!({"id":"100","name":"Rust community","channels":[{"id":"101","type":4,"name":"Community","position":0},{"id":"102","type":0,"name":"general","parent_id":"101","position":1},{"id":"103","type":0,"name":"projects","parent_id":"101","position":2}]})).unwrap();
+    s.store.guild(guild);
+    let dm: Channel = serde_json::from_value(
+        serde_json::json!({"id":"200","type":1,"recipients":[{"id":"3","username":"River"}]}),
+    )
+    .unwrap();
+    s.store.channels.insert(dm.id.clone(), dm);
+    for (i, name, content) in [
+        (
+            1,
+            "Ada",
+            "Welcome to Rustcord. A little less noise, a little more conversation.",
+        ),
+        (
+            2,
+            "River",
+            "Text chat is here. Messages stay in memory, not on disk.",
+        ),
+        (
+            3,
+            "Ada",
+            "The gateway and REST client run off the UI thread. Voice can join later.",
+        ),
+    ] {
+        s.store.insert(Message {
+            id: i.to_string(),
+            channel_id: "102".into(),
+            author: User {
+                id: i.to_string(),
+                username: name.into(),
+                global_name: None,
+            },
+            content: content.into(),
+            timestamp: format!("2026-11-23T10:0{i}:00Z"),
+        });
+    }
+    s.exhausted.insert("102".into());
+}
+pub fn run() {
+    rune::run(AppSpec {
+        setup: Some(|s: &mut State, waker| {
+            s.waker = Some(waker);
+            // Headless scenes must never read credentials.
+            if !std::env::args()
+                .any(|a| matches!(a.as_str(), "--snap" | "--tree" | "--scene" | "--script"))
+            {
+                match auth::load() {
+                    Ok(Some(token)) => {
+                        s.token.replace_text(token.as_str());
+                        s.remember = true;
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        s.error = "OS keychain unavailable; sign in without Remember me.".into()
+                    }
+                }
+            }
+        }),
+        poll: Some(events::poll),
+        scenes: &[("main", demo)],
+        min_size: Some((800.0, 540.0)),
+        ..AppSpec::new("Rustcord", (1120.0, 760.0), State::default, view)
+    });
+}

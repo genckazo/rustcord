@@ -1,0 +1,31 @@
+[package]
+name = "rustcord"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rune = { git = "https://github.com/anomalyco/rune", rev = "b7a08d6aba94dc19bba2170c460b5d9841eec11b", features = ["tooling"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = { version = "0.3", features = ["sink"] }
+keyring = "4.2"
+rand = "0.10"
+zeroize = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 3
+panic = "abort"
+
+[patch.crates-io]
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "b7a08d6aba94dc19bba2170c460b5d9841eec11b" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "b7a08d6aba94dc19bba2170c460b5d9841eec11b" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "b7a08d6aba94dc19bba2170c460b5d9841eec11b" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "b7a08d6aba94dc19bba2170c460b5d9841eec11b" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "b7a08d6aba94dc19bba2170c460b5d9841eec11b" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "b7a08d6aba94dc19bba2170c460b5d9841eec11b" }
