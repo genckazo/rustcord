@@ -34,6 +34,7 @@ pub struct State {
     search_draft: TextEdit,
     search_here: bool,
     search: Option<Search>,
+    search_error: Option<String>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -56,6 +57,7 @@ impl Default for State {
             search_draft: TextEdit::default(),
             search_here: false,
             search: None,
+            search_error: None,
         }
     }
 }
@@ -133,9 +135,18 @@ impl State {
     }
     fn close_search(&mut self) {
         self.search = None;
+        self.search_error = None;
+    }
+    fn reset_search(&mut self) {
+        self.close_search();
+        self.search_draft.clear();
     }
     fn select(&mut self, channel: String, tx: &mut Tx) {
-        self.close_search();
+        if self.guild.is_none() && self.channel.as_ref() != Some(&channel) {
+            self.reset_search();
+        } else {
+            self.close_search();
+        }
         self.channel = Some(channel.clone());
         self.draft.clear();
         if !self.store.messages.contains_key(&channel) {
@@ -177,8 +188,7 @@ fn logout(s: &mut State, _: &mut Tx) {
     s.exhausted.clear();
     s.sending = false;
     s.demo = false;
-    s.search = None;
-    s.search_draft.clear();
+    s.reset_search();
     s.status = "Offline".into();
     s.error = if auth::clear().is_err() {
         "Could not clear keychain. Remove rustcord/discord-token manually from your OS keychain."
@@ -202,11 +212,14 @@ fn start_search(s: &mut State) {
             {
                 return;
             }
-            s.error.clear();
+            s.search_error = None;
             s.search = Some(Search::new(query));
             s.search_page(0);
         }
-        Err(error) => s.error = error,
+        Err(error) => {
+            s.search = None;
+            s.search_error = Some(error);
+        }
     }
 }
 fn send(s: &mut State, _: &mut Tx) {
@@ -291,7 +304,7 @@ fn chat(s: &State) -> El {
             |s, _| {
                 s.guild = None;
                 s.channel = None;
-                s.close_search();
+                s.reset_search();
             },
         ));
     let mut guilds: Vec<_> = s.store.guilds.values().collect();
@@ -306,7 +319,7 @@ fn chat(s: &State) -> El {
             move |s, _| {
                 s.guild = Some(id.clone());
                 s.channel = None;
-                s.close_search();
+                s.reset_search();
                 if s.store.channels_for(Some(&id)).is_empty() {
                     s.command(Command::Channels(id.clone()));
                 }
@@ -376,6 +389,15 @@ fn chat(s: &State) -> El {
     let mut main = col().grow(1.0).min_h(0.0).h_full().padding(24.0).gap(18.0);
     if s.search_scope().is_some() {
         main = main.child(header(s));
+    }
+    if let Some(error) = &s.search_error {
+        main = main.child(
+            text(error)
+                .font(type_::BODY)
+                .color(rune::oklch(0.75, 0.13, 25.0))
+                .wrap()
+                .w_full(),
+        );
     }
     if let Some(search) = &s.search {
         main = main.child(results(s, search));
@@ -747,4 +769,39 @@ pub fn run() {
         min_size: Some((800.0, 540.0)),
         ..AppSpec::new("Rustcord", (1120.0, 760.0), State::default, view)
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn demo_search_scopes_and_invalid_queries() {
+        let mut s = State::default();
+        demo(&mut s);
+        s.search_draft.replace_text("RUST");
+        start_search(&mut s);
+        let search = s.search.as_ref().unwrap();
+        assert_eq!(search.results.len(), 1);
+        assert_eq!(search.summary(), "1 result for “RUST”");
+        s.search_draft.replace_text("   ");
+        start_search(&mut s);
+        assert!(s.search.is_none());
+        assert_eq!(
+            s.search_error.as_deref(),
+            Some("Type something to search for.")
+        );
+        s.close_search();
+        assert!(s.search_error.is_none());
+        s.channel = Some("103".into());
+        s.search_here = true;
+        s.search_draft.replace_text("rust");
+        start_search(&mut s);
+        assert_eq!(s.search.as_ref().unwrap().total, 0);
+        s.reset_search();
+        assert!(s.search.is_none() && s.search_draft.text.is_empty());
+        s.guild = None;
+        s.channel = Some("200".into());
+        assert_eq!(s.search_scope(), Some(Scope::Channel("200".into())));
+    }
 }
