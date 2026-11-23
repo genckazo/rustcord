@@ -1,6 +1,6 @@
 use super::State;
 use crate::{
-    model::{Channel, Guild, Message, User},
+    model::{Channel, Guild, Message, User, VoiceState},
     network::Event,
     notifications,
     search::Query,
@@ -37,6 +37,31 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
                         s.store.channels.insert(c.id.clone(), c);
                     }
                 }
+            }
+            if let Ok(states) =
+                serde_json::from_value::<Vec<VoiceState>>(data["voice_states"].clone())
+            {
+                for state in states {
+                    s.store.voice_state(state);
+                }
+            }
+            if let Some(calls) = data["calls"].as_array() {
+                for call in calls {
+                    apply_call(s, call);
+                }
+            }
+        }
+        "VOICE_STATE_UPDATE" => {
+            if let Ok(state) = serde_json::from_value(data) {
+                s.store.voice_state(state);
+            }
+        }
+        "CALL_CREATE" | "CALL_UPDATE" => apply_call(s, &data),
+        "CALL_DELETE" => {
+            if let Some(channel) = data["channel_id"].as_str() {
+                s.store
+                    .voice_states
+                    .retain(|_, state| state.channel_id.as_deref() != Some(channel));
             }
         }
         "GUILD_CREATE" => {
@@ -148,6 +173,13 @@ fn apply_search(
         search.apply(offset, result);
     }
 }
+fn voice_snapshot(s: &mut State, voice: crate::voice::Snapshot) {
+    if voice.target.is_none() && !voice.status.is_empty() && voice.status != "Voice disconnected" {
+        s.error = voice.status.clone();
+    }
+    s.voice = voice;
+}
+
 pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
     let now = Instant::now();
     let mut changed = s.store.typing.expire(now);
@@ -163,12 +195,16 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
             changed = true;
         }
     }
+    if s.scrolled_up_changed.replace(false) {
+        changed = true;
+    }
     while let Some(event) = s.network.as_mut().and_then(|n| n.rx.try_recv().ok()) {
         if matches!(event, Event::TypingTick) {
             continue;
         }
         changed = true;
         match event {
+            Event::Voice(voice) => voice_snapshot(s, voice),
             Event::TypingTick => {}
             Event::Status(status) => s.status = status,
             Event::Dispatch(name, data) => dispatch(s, &name, data),
@@ -183,6 +219,7 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
                     Ok(m) => {
                         s.store.activity(&m);
                         s.store.typing.reset(&m.channel_id);
+                        s.drafts.remove(&m.channel_id);
                         if s.finish_sent(m) {
                             tx.scroll_to_bottom("transcript");
                         }
@@ -223,10 +260,70 @@ fn opened_dm(s: &mut State, result: Result<Channel, String>, tx: &mut Tx) {
     }
 }
 
+fn apply_call(s: &mut State, data: &Value) {
+    if let Some(states) = data["voice_states"].as_array() {
+        for state in states {
+            let mut state = state.clone();
+            if state["channel_id"].is_null() {
+                state["channel_id"] = data["channel_id"].clone();
+            }
+            if let Ok(state) = serde_json::from_value(state) {
+                s.store.voice_state(state);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn failed_voice_join_shows_error_without_a_panel() {
+        for status in [
+            "Voice connection failed",
+            "Voice handshake timed out",
+            "Untrusted voice endpoint",
+            "Wait for Discord READY before joining voice",
+        ] {
+            let mut s = State::default();
+            super::super::voice_panel::demo(&mut s);
+            voice_snapshot(
+                &mut s,
+                crate::voice::Snapshot {
+                    status: status.into(),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(s.error, status);
+            assert_eq!(s.voice.status, status);
+            assert!(super::super::voice_panel::panel(&s).is_none());
+        }
+    }
+
+    #[test]
+    fn normal_voice_snapshots_do_not_replace_banner_errors() {
+        let mut s = State {
+            error: "Existing error".into(),
+            ..Default::default()
+        };
+        for status in ["", "Voice disconnected"] {
+            voice_snapshot(
+                &mut s,
+                crate::voice::Snapshot {
+                    status: status.into(),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(s.error, "Existing error");
+        }
+        super::super::voice_panel::demo(&mut s);
+        let voice = s.voice.clone();
+        voice_snapshot(&mut s, voice);
+        assert_eq!(s.error, "Existing error");
+        assert!(s.voice.target.is_some());
+    }
 
     #[test]
     fn dm_ready_labels_order_activity_and_recipients() {
@@ -393,6 +490,41 @@ mod tests {
     }
 
     #[test]
+    fn voice_members_ready_moves_leave_and_invalid_states() {
+        let mut s = State::default();
+        dispatch(
+            &mut s,
+            "READY",
+            json!({"user":{"id":"1","username":"Me"},"guilds":[{"id":"10","name":"Guild","voice_states":[{"user_id":"2","channel_id":"20","member":{"user":{"id":"2","username":"Ada"}}}]}],"calls":[{"channel_id":"30","voice_states":[{"user_id":"1"}]}]}),
+        );
+        assert_eq!(
+            s.store.voice_members("20"),
+            vec![("2".into(), "Ada".into())]
+        );
+        assert_eq!(s.store.voice_members("30"), vec![("1".into(), "Me".into())]);
+        dispatch(
+            &mut s,
+            "VOICE_STATE_UPDATE",
+            json!({"guild_id":"10","user_id":"2","channel_id":"21"}),
+        );
+        assert!(s.store.voice_members("20").is_empty());
+        assert_eq!(s.store.voice_members("21").len(), 1);
+        dispatch(
+            &mut s,
+            "VOICE_STATE_UPDATE",
+            json!({"guild_id":"10","user_id":"2","channel_id":null}),
+        );
+        dispatch(&mut s, "VOICE_STATE_UPDATE", json!({}));
+        assert!(s.store.voice_members("21").is_empty());
+        assert_eq!(s.store.voice_members("30").len(), 1);
+        dispatch(
+            &mut s,
+            "READY",
+            json!({"user":{"id":"1","username":"Me"},"guilds":[]}),
+        );
+        assert!(s.store.voice_states.is_empty());
+    }
+    #[test]
     fn search_results_apply_only_to_current_query() {
         use crate::search::{Scope, Search};
         let mut state = State::default();
@@ -409,6 +541,25 @@ mod tests {
         let search = state.search.as_ref().unwrap();
         assert_eq!(search.results.len(), 1);
         assert!(!search.loading);
+    }
+
+    #[test]
+    fn drafts_survive_channel_switch() {
+        let mut state = State::default();
+        let mut tx = Tx::default();
+        state.select("1".into(), &mut tx);
+        state.draft.replace_text("first draft");
+        state.select("2".into(), &mut tx);
+        assert!(state.draft.text.is_empty());
+        state.draft.replace_text("second draft");
+        state.select("1".into(), &mut tx);
+        assert_eq!(state.draft.text, "first draft");
+        state.select("2".into(), &mut tx);
+        assert_eq!(state.draft.text, "second draft");
+        state.draft.clear();
+        state.select("1".into(), &mut tx);
+        state.select("2".into(), &mut tx);
+        assert!(state.draft.text.is_empty());
     }
 
     #[test]

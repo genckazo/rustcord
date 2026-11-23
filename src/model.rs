@@ -20,6 +20,8 @@ pub struct Guild {
     pub name: String,
     #[serde(default)]
     pub channels: Vec<Channel>,
+    #[serde(default)]
+    pub voice_states: Vec<VoiceState>,
 }
 fn unknown() -> String {
     "Loading server…".into()
@@ -145,4 +147,18 @@ mod tests {
         assert_eq!(rich.attachments[0].filename, "notes.txt");
         assert!(rich.attachments[0].content_type.is_none());
     }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct VoiceState {
+    pub user_id: String,
+    pub channel_id: Option<String>,
+    pub guild_id: Option<String>,
+    #[serde(default)]
+    pub member: Option<VoiceMember>,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct VoiceMember {
+    pub user: Option<User>,
+    pub nick: Option<String>,
 }

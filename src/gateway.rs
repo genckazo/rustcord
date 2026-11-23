@@ -1,8 +1,10 @@
 use crate::network::{Event, Events};
+use crate::voice::Signal;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio::time::{timeout, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use zeroize::Zeroizing;
@@ -27,16 +29,22 @@ pub fn gateway_url(url: &str) -> Option<String> {
     let base = url.trim_end_matches('/');
     (base == "wss://gateway.discord.gg").then(|| format!("{base}/?v=10&encoding=json"))
 }
-pub async fn run(token: Zeroizing<String>, events: Events) {
+pub async fn run(
+    token: Zeroizing<String>,
+    events: Events,
+    mut commands: mpsc::Receiver<Value>,
+    voice: mpsc::Sender<Signal>,
+) {
     let mut session = Session::default();
     let mut backoff = 1;
     loop {
         events.send(Event::Status("Connecting…".into())).await;
-        match connection(&token, &events, &mut session).await {
+        match connection(&token, &events, &mut session, &mut commands, &voice).await {
             Ok(()) => {
                 backoff = 1;
             }
             Err(Failure::Fatal) => {
+                let _ = voice.send(Signal::Reset).await;
                 events
                     .send(Event::Status(
                         "Authentication rejected. Log out and check your token.".into(),
@@ -46,6 +54,8 @@ pub async fn run(token: Zeroizing<String>, events: Events) {
             }
             Err(Failure::Retry) => {}
         }
+        let _ = voice.send(Signal::Reset).await;
+        while commands.try_recv().is_ok() {}
         events
             .send(Event::Status(format!("Reconnecting in {backoff}s…")))
             .await;
@@ -57,7 +67,13 @@ enum Failure {
     Retry,
     Fatal,
 }
-async fn connection(token: &str, events: &Events, session: &mut Session) -> Result<(), Failure> {
+async fn connection(
+    token: &str,
+    events: &Events,
+    session: &mut Session,
+    commands: &mut mpsc::Receiver<Value>,
+    voice: &mpsc::Sender<Signal>,
+) -> Result<(), Failure> {
     let url = session
         .url
         .as_deref()
@@ -95,6 +111,9 @@ async fn connection(token: &str, events: &Events, session: &mut Session) -> Resu
         .map_err(|_| Failure::Retry)?;
     loop {
         tokio::select! {
+            Some(command) = commands.recv() => {
+                socket.send(Message::Text(command.to_string().into())).await.map_err(|_| Failure::Retry)?;
+            }
             _ = tokio::time::sleep_until(next) => {
                 if awaiting_ack { return Err(Failure::Retry); }
                 socket.send(Message::Text(json!({"op":1,"d":session.seq}).to_string().into())).await.map_err(|_| Failure::Retry)?;
@@ -122,6 +141,7 @@ async fn connection(token: &str, events: &Events, session: &mut Session) -> Resu
                                     session.url = payload.d["resume_gateway_url"].as_str().map(str::to_owned);
                                     events.send(Event::Status("Connected".into())).await;
                                 } else if name == "RESUMED" { events.send(Event::Status("Connected (resumed)".into())).await; }
+                                if matches!(name.as_str(), "READY" | "RESUMED" | "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE") { let _ = voice.send(Signal::Dispatch(name.clone(), payload.d.clone())).await; }
                                 events.send(Event::Dispatch(name, payload.d)).await;
                             }
                             1 => {

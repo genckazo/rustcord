@@ -1,6 +1,10 @@
+mod demo_actions;
+#[cfg(test)]
+mod demo_tests;
 mod events;
 mod message_media;
 mod time;
+mod voice_panel;
 
 use crate::{
     auth,
@@ -14,7 +18,11 @@ use rune::{
     tok::{self, type_},
     AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, Waker,
 };
-use std::{cell::Cell, collections::HashSet, rc::Rc};
+use std::{
+    cell::Cell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 use zeroize::Zeroizing;
 
 const SIDEBAR_PAGE: usize = 50;
@@ -26,7 +34,7 @@ fn sidebar_channels<'a>(
 ) -> Vec<&'a str> {
     channels
         .iter()
-        .filter(|c| c.is_text())
+        .filter(|c| c.is_text() || c.kind == 2)
         .enumerate()
         .filter(|(index, c)| *index < limit || Some(c.id.as_str()) == selected)
         .map(|(_, c)| c.id.as_str())
@@ -36,6 +44,7 @@ fn sidebar_channels<'a>(
 pub struct State {
     token: TextEdit,
     draft: TextEdit,
+    drafts: HashMap<String, String>,
     remember: bool,
     network: Option<Network>,
     waker: Option<Waker>,
@@ -51,16 +60,20 @@ pub struct State {
     sending: bool,
     scroll_top: Rc<Cell<bool>>,
     scroll_bottom: Rc<Cell<bool>>,
+    voice: crate::voice::Snapshot,
     search_draft: TextEdit,
     search_here: bool,
     search: Option<Search>,
     search_error: Option<String>,
+    scrolled_up: Rc<Cell<bool>>,
+    scrolled_up_changed: Rc<Cell<bool>>,
 }
 impl Default for State {
     fn default() -> Self {
         Self {
             token: TextEdit::new("").secure(),
             draft: TextEdit::default(),
+            drafts: HashMap::new(),
             remember: false,
             network: None,
             waker: None,
@@ -76,10 +89,13 @@ impl Default for State {
             sending: false,
             scroll_top: Rc::new(Cell::new(false)),
             scroll_bottom: Rc::new(Cell::new(false)),
+            voice: crate::voice::Snapshot::default(),
             search_draft: TextEdit::default(),
             search_here: false,
             search: None,
             search_error: None,
+            scrolled_up: Rc::new(Cell::new(false)),
+            scrolled_up_changed: Rc::new(Cell::new(false)),
         }
     }
 }
@@ -127,6 +143,19 @@ impl State {
                 self.error = error;
                 false
             }
+        }
+    }
+    fn voice_command(&mut self, command: crate::voice::Command) {
+        if self.demo {
+            demo_actions::voice(self, command);
+            return;
+        }
+        if !self
+            .network
+            .as_ref()
+            .is_some_and(|n| n.voice.try_send(command).is_ok())
+        {
+            self.error = "Voice queue unavailable; try again.".into();
         }
     }
     fn open_dm(&mut self, user: User, tx: &mut Tx) {
@@ -239,9 +268,20 @@ impl State {
         } else {
             self.close_search();
         }
+        if let Some(current) = self.channel.take() {
+            if self.draft.text.is_empty() {
+                self.drafts.remove(&current);
+            } else {
+                self.drafts.insert(current, self.draft.text.clone());
+            }
+        }
         self.channel = Some(channel.clone());
         self.store.pin(Some(channel.clone()));
-        self.draft.clear();
+        if let Some(saved) = self.drafts.get(&channel) {
+            self.draft.replace_text(saved.clone());
+        } else {
+            self.draft.clear();
+        }
         if !self.store.messages.contains_key(&channel) {
             self.history(channel, Direction::Latest);
         }
@@ -250,6 +290,7 @@ impl State {
 }
 fn connect(s: &mut State, _: &mut Tx) {
     if s.token.text.trim().is_empty() {
+        s.error = "Enter your Discord token to connect.".into();
         return;
     }
     let Some(waker) = s.waker.clone() else {
@@ -277,6 +318,7 @@ fn logout(s: &mut State, _: &mut Tx) {
     s.channel = None;
     s.token.clear();
     s.draft.clear();
+    s.drafts.clear();
     s.loading.clear();
     s.pending_present.clear();
     s.sidebar_limit = SIDEBAR_PAGE;
@@ -284,6 +326,7 @@ fn logout(s: &mut State, _: &mut Tx) {
     s.demo = false;
     s.reset_search();
     s.status = "Offline".into();
+    s.voice = crate::voice::Snapshot::default();
     s.error = if auth::clear().is_err() {
         "Could not clear keychain. Remove rustcord/discord-token manually from your OS keychain."
             .into()
@@ -316,8 +359,8 @@ fn start_search(s: &mut State) {
         }
     }
 }
-fn send(s: &mut State, _: &mut Tx) {
-    if s.demo || s.sending || s.draft.text.trim().is_empty() {
+fn send(s: &mut State, tx: &mut Tx) {
+    if s.sending || s.draft.text.trim().is_empty() {
         return;
     }
     if s.draft.text.chars().count() > 2000 {
@@ -325,6 +368,11 @@ fn send(s: &mut State, _: &mut Tx) {
         return;
     }
     if let Some(channel) = s.channel.clone() {
+        if s.demo {
+            demo_actions::send(s, channel);
+            tx.scroll_to_bottom("transcript");
+            return;
+        }
         s.sending = s.command(Command::Send {
             channel,
             content: s.draft.text.clone(),
@@ -357,6 +405,14 @@ fn button(
     selected: bool,
     action: impl Fn(&mut State, &mut Tx) + 'static,
 ) -> El {
+    button_content(key, label(value), selected, action)
+}
+fn button_content(
+    key: impl Into<String>,
+    content: El,
+    selected: bool,
+    action: impl Fn(&mut State, &mut Tx) + 'static,
+) -> El {
     let t = tok::theme(true);
     el().key(key.into())
         .role("button")
@@ -369,7 +425,7 @@ fn button(
         .fill(if selected { t.control_off } else { t.card })
         .hover(t.hover)
         .on_press_tx(action)
-        .child(label(value))
+        .child(content)
 }
 fn login(s: &State) -> El {
     let t = tok::theme(true);
@@ -395,7 +451,7 @@ fn login(s: &State) -> El {
             .child(button("remember", if s.remember { "[✓] Remember me in the OS keychain" } else { "[ ] Remember me in the OS keychain" }, s.remember, |s, _| s.remember = !s.remember))
             .child(button("connect", "Connect →", true, connect))
             .child(text("Third-party user-token clients violate Discord’s terms. Your account may be restricted or terminated.").font(type_::BODY).color(t.text_secondary).wrap().w_full()))
-        .child(text("No telemetry · No message cache · Files open in your browser").font(type_::BODY).color(t.text_secondary))
+        .child(text("No telemetry · No message or audio files · Links open in your browser").font(type_::BODY).color(t.text_secondary).wrap().w_full())
 }
 fn chat(s: &State) -> El {
     let t = tok::theme(true);
@@ -453,29 +509,47 @@ fn chat(s: &State) -> El {
     let mut channel_list = col().w_full().gap(6.0);
     let channel_button = |c: &Channel| {
         let id = c.id.clone();
-        button(
+        let guild = c.guild_id.clone();
+        let voice = c.kind == 2;
+        button_content(
             format!("channel-{id}"),
-            format!(
-                "{} {}",
-                if c.guild_id.is_none() {
-                    if c.kind == 3 {
-                        "@@"
+            if voice {
+                voice_panel::speaker_label(c.label())
+            } else {
+                label(format!(
+                    "{} {}",
+                    if c.guild_id.is_none() {
+                        if c.kind == 3 {
+                            "@@"
+                        } else {
+                            "@"
+                        }
                     } else {
-                        "@"
-                    }
+                        "#"
+                    },
+                    s.store.channel_label(c)
+                ))
+            },
+            s.channel.as_ref() == Some(&id)
+                || s.voice.target.as_ref().is_some_and(|t| t.channel == id),
+            move |s, tx| {
+                if voice {
+                    s.voice_command(crate::voice::Command::Join(
+                        crate::voice::handshake::Target {
+                            guild: guild.clone(),
+                            channel: id.clone(),
+                        },
+                    ));
                 } else {
-                    "#"
-                },
-                s.store.channel_label(c)
-            ),
-            s.channel.as_ref() == Some(&id),
-            move |s, tx| s.select(id.clone(), tx),
+                    s.select(id.clone(), tx);
+                }
+            },
         )
     };
     for c in channels
         .iter()
         .filter(|c| {
-            c.is_text()
+            (c.is_text() || c.kind == 2)
                 && !channels.iter().any(|category| {
                     category.kind == 4 && c.parent_id.as_ref() == Some(&category.id)
                 })
@@ -483,6 +557,9 @@ fn chat(s: &State) -> El {
         .filter(|c| visible.contains(&c.id.as_str()))
     {
         channel_list = channel_list.child(channel_button(c));
+        if c.kind == 2 {
+            channel_list = channel_list.child(voice_panel::members(s, &c.id));
+        }
     }
     for category in channels.iter().filter(|c| c.kind == 4) {
         if !channels
@@ -499,13 +576,21 @@ fn chat(s: &State) -> El {
         );
         for c in channels
             .iter()
-            .filter(|c| c.is_text() && c.parent_id.as_ref() == Some(&category.id))
+            .filter(|c| (c.is_text() || c.kind == 2) && c.parent_id.as_ref() == Some(&category.id))
             .filter(|c| visible.contains(&c.id.as_str()))
         {
             channel_list = channel_list.child(channel_button(c));
+            if c.kind == 2 {
+                channel_list = channel_list.child(voice_panel::members(s, &c.id));
+            }
         }
     }
-    if channels.iter().filter(|c| c.is_text()).count() > visible.len() {
+    if channels
+        .iter()
+        .filter(|c| c.is_text() || c.kind == 2)
+        .count()
+        > visible.len()
+    {
         channel_list = channel_list.child(button("more-channels", "Show more", false, |s, _| {
             s.sidebar_limit = s.sidebar_limit.saturating_add(SIDEBAR_PAGE);
         }));
@@ -530,7 +615,29 @@ fn chat(s: &State) -> El {
                 })
                 .child(channel_list),
         );
-    let mut main = col().grow(1.0).min_h(0.0).h_full().padding(24.0).gap(18.0);
+    let mut main = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .min_h(0.0)
+        .h_full()
+        .padding(24.0)
+        .gap(18.0);
+    if let Some(channel) = s.channel.as_ref().filter(|id| {
+        s.store
+            .channels
+            .get(*id)
+            .is_some_and(|c| matches!(c.kind, 1 | 3))
+    }) {
+        let id = channel.clone();
+        main = main.child(button("dm-call", "Join call", false, move |s, _| {
+            s.voice_command(crate::voice::Command::Join(
+                crate::voice::handshake::Target {
+                    guild: None,
+                    channel: id.clone(),
+                },
+            ));
+        }));
+    }
     if s.search_scope().is_some() {
         main = main.child(header(s));
     }
@@ -617,6 +724,8 @@ fn chat(s: &State) -> El {
         }
         let top = s.scroll_top.clone();
         let bottom = s.scroll_bottom.clone();
+        let up = s.scrolled_up.clone();
+        let up_changed = s.scrolled_up_changed.clone();
         let waker = s.waker.clone();
         main = main.child(
             col()
@@ -640,6 +749,13 @@ fn chat(s: &State) -> El {
                             waker();
                         }
                     }
+                    let away = pos.max[1] - pos.offset[1] > 1.0;
+                    if up.replace(away) != away {
+                        up_changed.set(true);
+                        if let Some(waker) = &waker {
+                            waker();
+                        }
+                    }
                 })
                 .child(messages),
         );
@@ -656,6 +772,7 @@ fn chat(s: &State) -> El {
                         .key("composer")
                         .single_line()
                         .grow(1.0)
+                        .min_w(0.0)
                         .h(46.0)
                         .padding(12.0)
                         .radius(8.0)
@@ -673,9 +790,11 @@ fn chat(s: &State) -> El {
                     send,
                 ))),
         );
-        main = main.child(button("bottom", "↓ Scroll to bottom", false, |_, tx| {
-            tx.scroll_to_bottom("transcript")
-        }));
+        if s.scrolled_up.get() {
+            main = main.child(button("bottom", "↓ Scroll to bottom", false, |_, tx| {
+                tx.scroll_to_bottom("transcript")
+            }));
+        }
     } else {
         main = main.child(
             col()
@@ -714,12 +833,19 @@ fn header(s: &State) -> El {
         .gap(8.0)
         .w_full()
         .center_y()
-        .child(text(title).font(type_::TITLE).color(t.text).grow(1.0))
+        .child(
+            text(title)
+                .font(type_::TITLE)
+                .color(t.text)
+                .wrap_anywhere()
+                .min_w(0.0),
+        )
         .child(
             text_input(&s.search_draft, type_::BODY)
                 .key("search")
                 .single_line()
-                .w(240.0)
+                .grow(1.0)
+                .min_w(0.0)
                 .h(38.0)
                 .padding(10.0)
                 .radius(8.0)
@@ -860,6 +986,9 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
         } else {
             login(s)
         });
+    if let Some(panel) = voice_panel::panel(s) {
+        root = root.child(panel);
+    }
     if !s.error.is_empty() {
         root = root.child(
             text(&s.error)
@@ -895,7 +1024,7 @@ fn demo(s: &mut State) {
     s.status = "Demo · no network".into();
     s.guild = Some("100".into());
     s.channel = Some("102".into());
-    let guild: Guild = serde_json::from_value(serde_json::json!({"id":"100","name":"Rust community","channels":[{"id":"101","type":4,"name":"Community","position":0},{"id":"102","type":0,"name":"general","parent_id":"101","position":1},{"id":"103","type":0,"name":"projects","parent_id":"101","position":2}]})).unwrap();
+    let guild: Guild = serde_json::from_value(serde_json::json!({"id":"100","name":"Rust community","channels":[{"id":"101","type":4,"name":"Community","position":0},{"id":"102","type":0,"name":"general","parent_id":"101","position":1},{"id":"103","type":0,"name":"projects","parent_id":"101","position":2},{"id":"104","type":2,"name":"Lounge","parent_id":"101","position":3}]})).unwrap();
     s.store.guild(guild);
     s.store.user = Some(User {
         id: "1".into(),
@@ -998,6 +1127,7 @@ pub fn run() {
         poll: Some(events::poll),
         scenes: &[
             ("main", demo),
+            ("voice", voice_panel::demo),
             ("search", demo_search),
             ("dms", |s| {
                 demo(s);
@@ -1110,6 +1240,7 @@ mod tests {
             serde_json::json!({"id":"1","type":4}),
             serde_json::json!({"id":"2","type":0,"parent_id":"1"}),
             serde_json::json!({"id":"3","type":1}),
+            serde_json::json!({"id":"4","type":2,"parent_id":"1"}),
         ]
         .into_iter()
         .map(|value| serde_json::from_value(value).unwrap())
@@ -1117,6 +1248,8 @@ mod tests {
         let refs: Vec<_> = channels.iter().collect();
         assert_eq!(sidebar_channels(&refs, 1, None), ["2"]);
         assert_eq!(sidebar_channels(&refs, 1, Some("3")), ["2", "3"]);
+        assert_eq!(sidebar_channels(&refs, 1, Some("4")), ["2", "4"]);
+        assert_eq!(sidebar_channels(&refs, 3, None), ["2", "3", "4"]);
     }
 
     #[test]
