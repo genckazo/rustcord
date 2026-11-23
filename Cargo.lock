@@ -5187,7 +5187,7 @@ source = "git+https://github.com/anomalyco/rune?rev=b7a08d6aba94dc19bba2170c460b
 dependencies = [
  "block2 0.6.2",
  "objc2 0.6.5",
- "windows",
+ "windows 0.62.2",
  "windows-core",
  "windows-registry",
 ]

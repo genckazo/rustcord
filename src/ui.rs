@@ -1,6 +1,9 @@
+mod demo_actions;
 mod events;
-mod voice_panel;
 mod message_media;
+#[cfg(test)]
+mod tests;
+mod voice_panel;
 
 use crate::{
     auth,
@@ -59,6 +62,7 @@ impl Default for State {
 impl State {
     fn voice_command(&mut self, command: crate::voice::Command) {
         if self.demo {
+            demo_actions::voice(self, command);
             return;
         }
         if !self
@@ -115,6 +119,7 @@ impl State {
 }
 fn connect(s: &mut State, _: &mut Tx) {
     if s.token.text.trim().is_empty() {
+        s.error = "Enter your Discord token to connect.".into();
         return;
     }
     let Some(waker) = s.waker.clone() else {
@@ -155,8 +160,8 @@ fn logout(s: &mut State, _: &mut Tx) {
         String::new()
     };
 }
-fn send(s: &mut State, _: &mut Tx) {
-    if s.demo || s.sending || s.draft.text.trim().is_empty() {
+fn send(s: &mut State, tx: &mut Tx) {
+    if s.sending || s.draft.text.trim().is_empty() {
         return;
     }
     if s.draft.text.chars().count() > 2000 {
@@ -164,6 +169,11 @@ fn send(s: &mut State, _: &mut Tx) {
         return;
     }
     if let Some(channel) = s.channel.clone() {
+        if s.demo {
+            demo_actions::send(s, channel);
+            tx.scroll_to_bottom("transcript");
+            return;
+        }
         s.sending = s.command(Command::Send {
             channel,
             content: s.draft.text.clone(),
@@ -521,10 +531,15 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
 }
 fn demo(s: &mut State) {
     s.demo = true;
+    s.store.user = Some(User {
+        id: "demo-self".into(),
+        username: "You".into(),
+        global_name: None,
+    });
     s.status = "Demo · no network".into();
     s.guild = Some("100".into());
     s.channel = Some("102".into());
-    let guild: Guild = serde_json::from_value(serde_json::json!({"id":"100","name":"Rust community","channels":[{"id":"101","type":4,"name":"Community","position":0},{"id":"102","type":0,"name":"general","parent_id":"101","position":1},{"id":"103","type":0,"name":"projects","parent_id":"101","position":2}]})).unwrap();
+    let guild: Guild = serde_json::from_value(serde_json::json!({"id":"100","name":"Rust community","channels":[{"id":"101","type":4,"name":"Community","position":0},{"id":"102","type":0,"name":"general","parent_id":"101","position":1},{"id":"103","type":0,"name":"projects","parent_id":"101","position":2},{"id":"104","type":2,"name":"Lounge","parent_id":"101","position":3}]})).unwrap();
     s.store.guild(guild);
     let dm: Channel = serde_json::from_value(
         serde_json::json!({"id":"200","type":1,"recipients":[{"id":"3","username":"River"}]}),

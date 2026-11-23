@@ -65,4 +65,6 @@ target/release/rustcord --scene voice --snap screenshots/voice.png
 
 All scenes render with Rune headlessly, without reading the OS keychain or making network requests; the main and voice scenes use fake data. A usable GPU backend is required (Mesa llvmpipe works on Linux). Never run headless capture tooling against a real logged-in session: diagnostic output may contain visible messages.
 
+Demo scenes are locally interactive: sending appends an in-memory demo message, and voice joins, mute, deafen, disconnect and DM calls change simulated state without opening devices or making network requests. Changes disappear when the process exits.
+
 On macOS, `bash scripts/bundle-macos.sh` creates `dist/Rustcord.app` (macOS 11+). The app is unsigned and not notarized; it is a development bundle, built for the runner's architecture, not a universal binary. CI uploads a zipped bundle preserving executable permissions.
