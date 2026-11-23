@@ -1,5 +1,6 @@
 mod events;
 mod message_media;
+mod time;
 
 use crate::{
     auth,
@@ -455,7 +456,11 @@ fn chat(s: &State) -> El {
                                     .font(type_::LABEL)
                                     .color(tok::accent(0, true)),
                             )
-                            .child(text(&m.timestamp).font(type_::BODY).color(t.text_secondary)),
+                            .child(
+                                text(time::format_timestamp(&m.timestamp))
+                                    .font(type_::BODY)
+                                    .color(t.text_secondary),
+                            ),
                     );
                 if !m.content.is_empty() {
                     item = item.child(label(&m.content).wrap_anywhere().w_full());
@@ -611,21 +616,25 @@ fn demo(s: &mut State) {
     )
     .unwrap();
     s.store.channels.insert(dm.id.clone(), dm);
-    for (i, name, content) in [
+    let now = jiff::Timestamp::now();
+    for (i, name, content, timestamp) in [
         (
             1,
             "Ada",
             "Welcome to Rustcord. A little less noise, a little more conversation.",
+            (now - jiff::Span::new().hours(49)).to_string(),
         ),
         (
             2,
             "River",
             "Text chat is here. Messages stay in memory, not on disk.",
+            (now - jiff::Span::new().minutes(4)).to_string(),
         ),
         (
             3,
             "Ada",
             "The gateway and REST client run off the UI thread. Voice can join later.",
+            now.to_string(),
         ),
     ] {
         s.store.insert(Message {
@@ -637,7 +646,7 @@ fn demo(s: &mut State) {
                 global_name: None,
             },
             content: content.into(),
-            timestamp: format!("2026-11-23T10:0{i}:00Z"),
+            timestamp,
             embeds: Vec::new(),
             attachments: Vec::new(),
         });
