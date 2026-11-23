@@ -12,8 +12,6 @@ use zeroize::Zeroizing;
 
 pub enum Command {
     Typing(String),
-    /// Arm a one-shot TypingTick wake at the next typing expiry.
-    Tick(Instant),
     History {
         channel: String,
         cursor: Option<String>,
@@ -59,6 +57,8 @@ impl Events {
 }
 pub struct Network {
     pub tx: mpsc::Sender<Command>,
+    /// Arm a one-shot TypingTick wake at the next typing expiry; `None` disarms.
+    pub tick: mpsc::Sender<Option<Instant>>,
     pub voice: mpsc::Sender<crate::voice::Command>,
     pub rx: mpsc::Receiver<Event>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
@@ -68,10 +68,12 @@ impl Network {
     pub fn mock() -> (Self, mpsc::Receiver<Command>) {
         let (tx, commands) = mpsc::channel(64);
         let (_, rx) = mpsc::channel(256);
+        let (tick, _) = mpsc::channel(4);
         let (voice, _) = mpsc::channel(16);
         (
             Self {
                 tx,
+                tick,
                 voice,
                 rx,
                 stop: None,
@@ -84,6 +86,7 @@ impl Network {
         let (events_tx, rx) = mpsc::channel(256);
         let (voice, voice_commands) = mpsc::channel(16);
         let (stop, stopped) = tokio::sync::oneshot::channel();
+        let (tick_tx, tick_rx) = mpsc::channel::<Option<Instant>>(4);
         std::thread::spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -113,7 +116,6 @@ impl Network {
                 ));
                 let gateway =
                     tokio::spawn(gateway::run(token, events.clone(), gateway_rx, signal_tx));
-                let (tick_tx, tick_rx) = mpsc::channel::<Instant>(4);
                 let ticks = typing_ticks(tick_rx, events.clone());
                 let worker = async {
                     while let Some(command) = commands.recv().await {
@@ -121,10 +123,6 @@ impl Network {
                             Command::OpenDm(user) => Event::OpenedDm(api.open_dm(&user).await),
                             Command::Typing(channel) => {
                                 let _ = api.typing(&channel).await;
-                                continue;
-                            }
-                            Command::Tick(at) => {
-                                let _ = tick_tx.try_send(at);
                                 continue;
                             }
                             Command::History {
@@ -175,17 +173,18 @@ impl Network {
         });
         Self {
             tx,
+            tick: tick_tx,
             voice,
             rx,
             stop: Some(stop),
         }
     }
 }
-async fn typing_ticks(mut rx: mpsc::Receiver<Instant>, events: Events) {
+async fn typing_ticks(mut rx: mpsc::Receiver<Option<Instant>>, events: Events) {
     let mut deadline: Option<Instant> = None;
     loop {
-        deadline = match deadline {
-            // A newer deadline re-arms; firing wakes the UI once to expire typings.
+        let update = match deadline {
+            // A newer update re-arms or disarms; firing wakes the UI once to expire typings.
             Some(at) => tokio::select! {
                 _ = tokio::time::sleep_until(at.into()) => {
                     events.send(Event::TypingTick).await;
@@ -195,13 +194,12 @@ async fn typing_ticks(mut rx: mpsc::Receiver<Instant>, events: Events) {
             },
             None => rx.recv().await,
         };
-        let Some(at) = deadline else { break };
-        // Collapse any queued re-arms into the latest deadline.
-        let mut latest = at;
+        let Some(mut update) = update else { break };
+        // Collapse any queued re-arms into the newest state.
         while let Ok(next) = rx.try_recv() {
-            latest = next;
+            update = next;
         }
-        deadline = Some(latest);
+        deadline = update;
     }
 }
 
@@ -235,7 +233,7 @@ mod tests {
             .await
             .is_err());
         tick_tx
-            .send(Instant::now() + Duration::from_millis(50))
+            .send(Some(Instant::now() + Duration::from_millis(50)))
             .await
             .unwrap();
         assert!(matches!(
@@ -244,6 +242,15 @@ mod tests {
         ));
         assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1);
         // One wake per deadline: nothing follows the fired tick.
+        assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv())
+            .await
+            .is_err());
+        // A `None` re-arm disarms a pending deadline before it fires.
+        tick_tx
+            .send(Some(Instant::now() + Duration::from_millis(50)))
+            .await
+            .unwrap();
+        tick_tx.send(None).await.unwrap();
         assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv())
             .await
             .is_err());
