@@ -204,6 +204,34 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
     if s.scrolled_up_changed.replace(false) {
         changed = true;
     }
+    while let Some(event) = s.qr_session.as_mut().and_then(|q| q.rx.try_recv().ok()) {
+        changed = true;
+        match event {
+            crate::qr_auth::QrEvent::Status(status) => s.qr_status = status,
+            crate::qr_auth::QrEvent::Ready {
+                width,
+                height,
+                rgba,
+            } => {
+                let pixels = s.qr_pixels.get_or_insert_with(rune::Pixels::new);
+                pixels.set(width, height, rgba);
+                s.qr_status = "Scan with the Discord mobile app".into();
+                s.error.clear();
+            }
+            crate::qr_auth::QrEvent::Scanned(user) => {
+                s.qr_status = format!("Scanned as {user} — confirm on your phone");
+            }
+            crate::qr_auth::QrEvent::Token(token) => {
+                super::start_session_with_token(s, token);
+                break;
+            }
+            crate::qr_auth::QrEvent::Error(err) => {
+                s.qr_session = None;
+                s.qr_pixels = None;
+                s.qr_status = err;
+            }
+        }
+    }
     while let Some(event) = s.network.as_mut().and_then(|n| n.rx.try_recv().ok()) {
         if matches!(event, Event::TypingTick) {
             continue;
