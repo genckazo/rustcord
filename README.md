@@ -48,4 +48,4 @@ target/release/rustcord --scene main --snap screenshots/main.png
 
 Both scenes render with Rune headlessly, without reading the OS keychain or making network requests; the main scene uses fake data. A usable GPU backend is required (Mesa llvmpipe works on Linux). Never run headless capture tooling against a real logged-in session: diagnostic output may contain visible messages.
 
-On macOS, `bash scripts/bundle-macos.sh` creates `dist/Rustcord.app` (macOS 11+). The app is unsigned and not notarized; it is a development bundle, built for the runner's architecture, not a universal binary. CI uploads a zipped bundle preserving executable permissions.
+On macOS, `bash scripts/bundle-macos.sh` creates `dist/Rustcord.app` (macOS 11+) containing a universal (arm64 + x86_64) release binary and prints the release binary sizes; `--native` builds only the host architecture for a faster local build. The app is unsigned and not notarized; it is a development bundle. CI uploads a zipped bundle preserving executable permissions and shows the size table in the job summary.
