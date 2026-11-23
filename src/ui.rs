@@ -67,6 +67,10 @@ pub struct State {
     search_error: Option<String>,
     scrolled_up: Rc<Cell<bool>>,
     scrolled_up_changed: Rc<Cell<bool>>,
+    qr_mode: bool,
+    qr_session: Option<crate::qr_auth::QrSession>,
+    qr_pixels: Option<rune::Pixels>,
+    qr_status: String,
 }
 impl Default for State {
     fn default() -> Self {
@@ -96,6 +100,10 @@ impl Default for State {
             search_error: None,
             scrolled_up: Rc::new(Cell::new(false)),
             scrolled_up_changed: Rc::new(Cell::new(false)),
+            qr_mode: false,
+            qr_session: None,
+            qr_pixels: None,
+            qr_status: String::new(),
         }
     }
 }
@@ -312,16 +320,10 @@ fn normalize_token(raw: &str) -> &str {
         .map(str::trim)
         .unwrap_or(trimmed)
 }
-fn connect(s: &mut State, _: &mut Tx) {
-    let cleaned = normalize_token(&s.token.text);
-    if cleaned.is_empty() {
-        s.error = "Enter your Discord token to connect.".into();
-        return;
-    }
+fn start_session_with_token(s: &mut State, token: Zeroizing<String>) {
     let Some(waker) = s.waker.clone() else {
         return;
     };
-    let token = Zeroizing::new(cleaned.to_owned());
     let result = if s.remember {
         auth::save(&token)
     } else {
@@ -331,16 +333,49 @@ fn connect(s: &mut State, _: &mut Tx) {
         s.error = "Cannot save to OS keychain. Disable Remember me to continue.".into();
         return;
     }
+    s.qr_mode = false;
+    s.qr_session = None;
+    s.qr_pixels = None;
+    s.qr_status.clear();
     s.network = Some(Network::start(token, waker));
     s.token.clear();
     s.error.clear();
     s.status = "Connecting…".into();
+}
+fn connect(s: &mut State, _: &mut Tx) {
+    let cleaned = normalize_token(&s.token.text);
+    if cleaned.is_empty() {
+        s.error = "Enter your Discord token to connect.".into();
+        return;
+    }
+    let token = Zeroizing::new(cleaned.to_owned());
+    start_session_with_token(s, token);
+}
+fn start_qr_login(s: &mut State, _: &mut Tx) {
+    s.qr_mode = true;
+    s.error.clear();
+    s.qr_pixels = None;
+    s.qr_status = "Connecting to Discord…".into();
+    if let Some(waker) = s.waker.clone() {
+        s.qr_session = Some(crate::qr_auth::QrSession::start(waker));
+    }
+}
+fn use_token_login(s: &mut State, _: &mut Tx) {
+    s.qr_mode = false;
+    s.qr_session = None;
+    s.qr_pixels = None;
+    s.qr_status.clear();
+    s.error.clear();
 }
 fn in_session(s: &State) -> bool {
     s.network.is_some() || s.demo
 }
 fn logout(s: &mut State, _: &mut Tx) {
     s.network = None;
+    s.qr_mode = false;
+    s.qr_session = None;
+    s.qr_pixels = None;
+    s.qr_status.clear();
     s.store = Store::default();
     s.guild = None;
     s.channel = None;
@@ -457,29 +492,113 @@ fn button_content(
 }
 fn login(s: &State) -> El {
     let t = tok::theme(true);
-    let field = text_input(&s.token, type_::BODY)
-        .key("token")
-        .single_line()
-        .secure()
-        .h(44.0)
+    let mode_tabs = row()
         .w_full()
-        .padding(12.0)
-        .fill(t.bg)
-        .radius(7.0)
-        .color(t.text)
-        .placeholder("Your Discord user token", t.text_secondary)
-        .on_edit(|s: &mut State| &mut s.token)
-        .on_submit(connect);
-    col().grow(1.0).w_full().center().gap(16.0)
-        .child(text("Rustcord").font(rune::TextStyle::new(30.0, 600.0)).color(t.text))
-        .child(label("A quieter place for your conversations."))
-        .child(col().w(420.0).padding(28.0).gap(18.0).radius(14.0).fill(t.card).border(1.0, t.card_border)
+        .gap(8.0)
+        .child(button("login-mode-token", "Token", !s.qr_mode, use_token_login).grow(1.0))
+        .child(button("login-mode-qr", "QR code", s.qr_mode, start_qr_login).grow(1.0));
+    let remember_btn = button(
+        "remember",
+        if s.remember {
+            "[✓] Remember me in the OS keychain"
+        } else {
+            "[ ] Remember me in the OS keychain"
+        },
+        s.remember,
+        |s, _| s.remember = !s.remember,
+    );
+    let mut card = col()
+        .w(420.0)
+        .padding(28.0)
+        .gap(16.0)
+        .radius(14.0)
+        .fill(t.card)
+        .border(1.0, t.card_border)
+        .child(mode_tabs);
+    if s.qr_mode {
+        let qr_box = if let Some(ref pixels) = s.qr_pixels {
+            col()
+                .w(212.0)
+                .h(212.0)
+                .center()
+                .radius(10.0)
+                .fill(rune::Color::WHITE)
+                .child(el().w(200.0).h(200.0).pixels(pixels))
+        } else {
+            col()
+                .w(212.0)
+                .h(212.0)
+                .center()
+                .radius(10.0)
+                .fill(t.bg)
+                .border(1.0, t.card_border)
+                .child(label("Generating QR code…"))
+        };
+        let status_text = if s.qr_status.is_empty() {
+            "Scan with the Discord mobile app"
+        } else {
+            s.qr_status.as_str()
+        };
+        card = card
+            .child(label("Scan with the Discord mobile app"))
+            .child(col().w_full().center().child(qr_box))
+            .child(
+                text(status_text)
+                    .font(type_::BODY)
+                    .color(t.text_secondary)
+                    .wrap()
+                    .w_full()
+                    .align(Align::Center),
+            )
+            .child(remember_btn)
+            .child(button("qr-refresh", "Refresh QR", true, start_qr_login));
+    } else {
+        let field = text_input(&s.token, type_::BODY)
+            .key("token")
+            .single_line()
+            .secure()
+            .h(44.0)
+            .w_full()
+            .padding(12.0)
+            .fill(t.bg)
+            .radius(7.0)
+            .color(t.text)
+            .placeholder("Your Discord user token", t.text_secondary)
+            .on_edit(|s: &mut State| &mut s.token)
+            .on_submit(connect);
+        card = card
             .child(label("Sign in with your Discord token"))
             .child(field)
-            .child(button("remember", if s.remember { "[✓] Remember me in the OS keychain" } else { "[ ] Remember me in the OS keychain" }, s.remember, |s, _| s.remember = !s.remember))
-            .child(button("connect", "Connect →", true, connect))
-            .child(text("Third-party user-token clients violate Discord’s terms. Your account may be restricted or terminated.").font(type_::BODY).color(t.text_secondary).wrap().w_full()))
-        .child(text("No telemetry · No message or audio files · Links open in your browser").font(type_::BODY).color(t.text_secondary).wrap().w_full().align(Align::Center))
+            .child(remember_btn)
+            .child(button("connect", "Connect →", true, connect));
+    }
+    card = card.child(
+        text("Third-party user-token clients violate Discord’s terms. Your account may be restricted or terminated.")
+            .font(type_::BODY)
+            .color(t.text_secondary)
+            .wrap()
+            .w_full(),
+    );
+    col()
+        .grow(1.0)
+        .w_full()
+        .center()
+        .gap(16.0)
+        .child(
+            text("Rustcord")
+                .font(rune::TextStyle::new(30.0, 600.0))
+                .color(t.text),
+        )
+        .child(label("A quieter place for your conversations."))
+        .child(card)
+        .child(
+            text("No telemetry · No message or audio files · Links open in your browser")
+                .font(type_::BODY)
+                .color(t.text_secondary)
+                .wrap()
+                .w_full()
+                .align(Align::Center),
+        )
 }
 fn chat(s: &State) -> El {
     let t = tok::theme(true);
@@ -1136,6 +1255,17 @@ fn demo(s: &mut State) {
         .or_default()
         .oldest_exhausted = true;
 }
+fn demo_qr(s: &mut State) {
+    s.qr_mode = true;
+    s.qr_status = "Scan with the Discord mobile app (demo)".into();
+    if let Ok((w, h, rgba)) =
+        crate::qr_auth::render_qr_rgba("https://discord.com/ra/demo-rustcord-qr-preview", 6, 4)
+    {
+        let pixels = rune::Pixels::new();
+        pixels.set(w, h, rgba);
+        s.qr_pixels = Some(pixels);
+    }
+}
 fn demo_search(s: &mut State) {
     demo(s);
     s.search_draft.replace_text("rustcord");
@@ -1167,6 +1297,7 @@ pub fn run() {
             ("main", demo),
             ("voice", voice_panel::demo),
             ("search", demo_search),
+            ("qr", demo_qr),
             ("dms", |s| {
                 demo(s);
                 s.guild = None;
