@@ -1,12 +1,12 @@
 # Rustcord
 
-A lightweight, privacy-focused Discord desktop client written in Rust, primarily for macOS and also buildable on Linux. Phase 1 supports guild text channels and DMs, live messages, sending, and paginated history. Voice, attachments, avatars, threads, search and rich formatting are not implemented.
+A lightweight, privacy-focused Discord desktop client written in Rust, primarily for macOS and also buildable on Linux. The client supports guild text channels and DMs, live messages, sending, and paginated history. The transcript shows embed cards and received attachments. Voice, file uploads, avatars, threads, search and rich formatting in message text are not implemented.
 
 **Warning:** Third-party clients using Discord user tokens violate Discord's Terms of Service and may result in account restrictions or termination. This is experimental, unofficial software; use at your own risk. Never share a token: it grants access to your account.
 
 ## Build and run
 
-Install the latest stable Rust toolchain (Rune currently requires a recent compiler).
+The Rust toolchain is pinned in `rust-toolchain.toml` (Rune requires a recent compiler); rustup installs it automatically.
 
 ```sh
 cargo run --release
@@ -26,9 +26,15 @@ Discord does not provide an officially supported user-token login flow for third
 
 Select a server or Direct messages, select a text channel, and type a message; Enter sends. Scroll to the top (or use Load older messages) for history; Scroll to bottom jumps back to recent messages. Mentions are sent with automatic mention parsing disabled.
 
+### macOS notifications
+
+The signed `Rustcord.app` can show silent macOS notifications for incoming DMs and direct server mentions when the Rustcord window is not focused. The first eligible message asks for permission. Change permission in **System Settings → Notifications → Rustcord** (System Preferences on older macOS versions). Alerts contain no sender, channel, or message text. Discord's server and channel notification preferences do not sync to Rustcord.
+
+Notifications are unavailable with `cargo run` and on Linux. For local development, build the app bundle as described below and sign it before opening it (for example, `codesign --force --sign - dist/Rustcord.app` for ad-hoc signing on your Mac).
+
 ## Privacy
 
-No telemetry, analytics, tracking endpoints (`/science` included), message database, or message disk cache. Only Discord REST at `discord.com` and WebSocket Gateway at `gateway.discord.gg` are contacted. HTTP redirects and environment proxies are disabled. Resume URLs are used only if they match the allowlist exactly; regional hosts fall back to the canonical gateway. `cdn.discordapp.com` is reserved for future attachments but is not currently contacted. Discord itself still receives your token, IP address, and chat activity. The UI framework's local headless tools write PNGs only when explicitly invoked. OS swap, crash collection, screenshots, and clipboard history are outside the app's control.
+No telemetry, analytics, tracking endpoints (`/science` included), message database, or message disk cache. Rustcord contacts only Discord REST at `discord.com` and WebSocket Gateway at `gateway.discord.gg`. HTTP redirects and environment proxies are disabled. Resume URLs are used only if they match the allowlist exactly; regional hosts fall back to the canonical gateway. Viewing messages does not load remote images or files. Clicking a link hands its URL (not your authorization token) to your browser, where normal browser history and downloads apply. Attachment links must point to Discord's CDN or media proxy and may expire. Discord itself still receives your token, IP address, and chat activity. The UI framework's local headless tools write PNGs only when explicitly invoked. OS swap, crash collection, screenshots, and clipboard history are outside the app's control.
 
 ## Architecture
 
