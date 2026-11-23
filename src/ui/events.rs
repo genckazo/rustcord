@@ -158,6 +158,9 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
             changed = true;
         }
     }
+    if s.scrolled_up_changed.replace(false) {
+        changed = true;
+    }
     while let Some(event) = s.network.as_mut().and_then(|n| n.rx.try_recv().ok()) {
         if matches!(event, Event::TypingTick) {
             continue;
