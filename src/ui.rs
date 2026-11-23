@@ -788,6 +788,9 @@ fn chat(s: &State) -> El {
                         .placeholder("Write a message…", t.text_secondary)
                         .on_edit(|s: &mut State| &mut s.draft)
                         .on_input_change(send_typing)
+                        .on_input_key(|s: &mut State, ev: &KeyEvent, _: &mut Tx| {
+                            s.escape_key(&ev.key)
+                        })
                         .on_submit(send),
                 )
                 .child(el().w(90.0).child(button(
@@ -867,6 +870,7 @@ fn header(s: &State) -> El {
                     t.text_secondary,
                 )
                 .on_edit(|s: &mut State| &mut s.search_draft)
+                .on_input_key(|s: &mut State, ev: &KeyEvent, _: &mut Tx| s.escape_key(&ev.key))
                 .on_submit(search),
         );
     if s.guild.is_some() && s.channel.is_some() {
