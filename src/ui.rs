@@ -506,6 +506,7 @@ fn demo(s: &mut State) {
             id: i.to_string(),
             channel_id: "102".into(),
             author: User {
+                id: i.to_string(),
                 username: name.into(),
                 global_name: None,
             },
