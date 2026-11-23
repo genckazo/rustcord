@@ -2,7 +2,7 @@ mod events;
 
 use crate::{
     auth,
-    model::{Channel, Guild, Message, User},
+    model::{Attachment, Channel, Guild, Message, User},
     network::{Command, Network},
     store::Store,
 };
@@ -342,7 +342,15 @@ fn chat(s: &State) -> El {
                                     text(&m.timestamp).font(type_::BODY).color(t.text_secondary),
                                 ),
                         )
-                        .child(label(&m.content).wrap_anywhere().w_full()),
+                        .child(if m.content.is_empty() && !m.attachments.is_empty() {
+                            text(m.body())
+                                .font(type_::BODY)
+                                .color(t.text_secondary)
+                                .wrap_anywhere()
+                                .w_full()
+                        } else {
+                            label(&m.content).wrap_anywhere().w_full()
+                        }),
                 );
             }
         }
@@ -459,21 +467,32 @@ fn demo(s: &mut State) {
     )
     .unwrap();
     s.store.channels.insert(dm.id.clone(), dm);
-    for (i, name, content) in [
+    for (i, name, content, attachments) in [
         (
             1,
             "Ada",
             "Welcome to Rustcord. A little less noise, a little more conversation.",
+            vec![],
         ),
         (
             2,
             "River",
             "Text chat is here. Messages stay in memory, not on disk.",
+            vec![],
         ),
         (
             3,
             "Ada",
             "The gateway and REST client run off the UI thread. Voice can join later.",
+            vec![],
+        ),
+        (
+            4,
+            "River",
+            "",
+            vec![Attachment {
+                filename: "sketch.png".into(),
+            }],
         ),
     ] {
         s.store.insert(Message {
@@ -485,6 +504,7 @@ fn demo(s: &mut State) {
                 global_name: None,
             },
             content: content.into(),
+            attachments,
             timestamp: format!("2026-11-23T10:0{i}:00Z"),
         });
     }

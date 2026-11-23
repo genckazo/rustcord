@@ -59,6 +59,7 @@ mod tests {
             channel_id: "1".into(),
             author: User::default(),
             content: "hello".into(),
+            attachments: vec![],
             timestamp: "now".into(),
         }
     }

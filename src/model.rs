@@ -52,11 +52,74 @@ impl Channel {
     }
 }
 #[derive(Clone, Debug, Deserialize)]
+pub struct Attachment {
+    #[serde(default)]
+    pub filename: String,
+}
+#[derive(Clone, Debug, Deserialize)]
 pub struct Message {
     pub id: String,
     pub channel_id: String,
     pub author: User,
     #[serde(default)]
     pub content: String,
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
     pub timestamp: String,
+}
+impl Message {
+    pub fn body(&self) -> String {
+        if self.content.is_empty() && !self.attachments.is_empty() {
+            match self.attachments.as_slice() {
+                [a] => format!("[attachment: {}]", a.filename),
+                a => format!("[{} attachments]", a.len()),
+            }
+        } else {
+            self.content.clone()
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn message(content: &str, attachments: Vec<Attachment>) -> Message {
+        Message {
+            id: "1".into(),
+            channel_id: "1".into(),
+            author: User::default(),
+            content: content.into(),
+            attachments,
+            timestamp: "now".into(),
+        }
+    }
+    fn attachment(filename: &str) -> Attachment {
+        Attachment {
+            filename: filename.into(),
+        }
+    }
+    #[test]
+    fn body_shows_placeholder_for_attachment_only_messages() {
+        assert_eq!(
+            message("", vec![attachment("a.png")]).body(),
+            "[attachment: a.png]"
+        );
+        assert_eq!(
+            message("", vec![attachment("a.png"), attachment("b.png")]).body(),
+            "[2 attachments]"
+        );
+        assert_eq!(message("hi", vec![]).body(), "hi");
+        assert_eq!(message("look", vec![attachment("a.png")]).body(), "look");
+    }
+    #[test]
+    fn attachments_deserialize_from_discord_payload() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "9",
+            "channel_id": "1",
+            "author": {"id": "2", "username": "River"},
+            "timestamp": "2026-11-23T10:00:00Z",
+            "attachments": [{"filename": "sketch.png", "url": "https://cdn.discordapp.com/x"}]
+        }))
+        .unwrap();
+        assert_eq!(m.body(), "[attachment: sketch.png]");
+    }
 }
