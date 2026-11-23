@@ -74,8 +74,6 @@ impl State {
         }
         // A full cache keeps only the newest messages, so an older page would be
         // evicted as soon as it arrived: the fetch would change nothing.
-        // A full cache keeps only the newest messages, so an older page would be
-        // evicted as soon as it arrived: the fetch would change nothing.
         if older
             && self
                 .store
