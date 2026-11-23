@@ -662,5 +662,28 @@ mod tests {
             }
             _ => panic!("expected a history refetch for the open channel"),
         }
+        // A live message arriving before the refetch reply lands must not be
+        // erased when the latest page is applied over it.
+        dispatch(
+            &mut s,
+            "MESSAGE_CREATE",
+            json!({"id":"9002","channel_id":"2","author":{"id":"1","username":"Ada"},
+                   "content":"live","timestamp":"2026-01-02T00:00:00Z"}),
+        );
+        let stale: Message = serde_json::from_value(json!(
+            {"id":"9001","channel_id":"2","author":{"id":"1","username":"Ada"},
+             "content":"stale","timestamp":"2026-01-01T00:00:00Z"}))
+        .unwrap();
+        s.store.history(
+            "2",
+            Direction::Latest,
+            vec![stale],
+            crate::store::HISTORY_LIMIT,
+        );
+        let ids: Vec<&str> = s.store.messages["2"]
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(ids, ["9001", "9002"]);
     }
 }

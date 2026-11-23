@@ -207,7 +207,14 @@ impl Store {
         let short = page.len() < limit;
         self.ensure(channel);
         if direction == Direction::Latest {
-            self.messages.get_mut(channel).unwrap().clear();
+            // A live message can land between the snapshot and this reply;
+            // keep anything newer than the page instead of erasing it.
+            let newest = page.iter().map(|m| snowflake(&m.id)).max();
+            let messages = self.messages.get_mut(channel).unwrap();
+            match newest {
+                Some(newest) => messages.retain(|m| snowflake(&m.id) > newest),
+                None => messages.clear(),
+            }
             self.windows.remove(channel);
         }
         let window = self.windows.entry(channel.to_owned()).or_default();
