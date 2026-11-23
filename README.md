@@ -6,7 +6,7 @@ A lightweight, privacy-focused Discord desktop client written in Rust, primarily
 
 ## Build and run
 
-Install the latest stable Rust toolchain (Rune currently requires a recent compiler).
+The Rust toolchain is pinned in `rust-toolchain.toml` (Rune requires a recent compiler); rustup installs it automatically.
 
 ```sh
 cargo run --release
