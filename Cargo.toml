@@ -16,6 +16,9 @@ rand = "0.10"
 zeroize = "1"
 jiff = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "b7a08d6aba94dc19bba2170c460b5d9841eec11b" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
