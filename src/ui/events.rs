@@ -75,7 +75,9 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
                     notifications::post(kind);
                 }
                 s.store.typing.clear(&m.channel_id, &m.author.id);
-                s.store.insert(m);
+                if let Some(evicted) = s.store.insert(m) {
+                    s.exhausted.remove(&evicted);
+                }
             }
         }
         "MESSAGE_UPDATE" => {
@@ -135,9 +137,13 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
                         if messages.len() < 50 {
                             s.exhausted.insert(channel.clone());
                         }
-                        s.store.messages.entry(channel.clone()).or_default();
+                        if let Some(evicted) = s.store.ensure(&channel) {
+                            s.exhausted.remove(&evicted);
+                        }
                         for m in messages {
-                            s.store.insert(m);
+                            if let Some(evicted) = s.store.insert(m) {
+                                s.exhausted.remove(&evicted);
+                            }
                         }
                         if initial && s.channel.as_ref() == Some(&channel) {
                             tx.scroll_to_bottom("transcript");
@@ -151,7 +157,9 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
                 match result {
                     Ok(m) => {
                         s.store.typing.reset(&m.channel_id);
-                        s.store.insert(m);
+                        if let Some(evicted) = s.store.insert(m) {
+                            s.exhausted.remove(&evicted);
+                        }
                         s.draft.clear();
                         tx.scroll_to_bottom("transcript");
                     }
