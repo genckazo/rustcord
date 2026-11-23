@@ -634,7 +634,7 @@ mod tests {
     fn ready_repins_and_refetches_the_open_channel() {
         use crate::network::Command;
         let mut s = State::default();
-        let (network, mut commands) = crate::network::Network::stub();
+        let (network, mut commands) = crate::network::Network::mock();
         s.network = Some(network);
         s.channel = Some("2".into());
         s.store.pin(Some("2".into()));
