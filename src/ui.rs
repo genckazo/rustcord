@@ -92,6 +92,7 @@ impl State {
     }
     fn select(&mut self, channel: String, tx: &mut Tx) {
         self.channel = Some(channel.clone());
+        self.store.pin(Some(channel.clone()));
         self.draft.clear();
         if !self.store.messages.contains_key(&channel) {
             self.history(channel, false);
@@ -237,6 +238,7 @@ fn chat(s: &State) -> El {
             |s, _| {
                 s.guild = None;
                 s.channel = None;
+                s.store.pin(None);
             },
         ));
     let mut guilds: Vec<_> = s.store.guilds.values().collect();
@@ -251,6 +253,7 @@ fn chat(s: &State) -> El {
             move |s, _| {
                 s.guild = Some(id.clone());
                 s.channel = None;
+                s.store.pin(None);
                 if s.store.channels_for(Some(&id)).is_empty() {
                     s.command(Command::Channels(id.clone()));
                 }
