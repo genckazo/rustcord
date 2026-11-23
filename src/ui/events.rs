@@ -111,8 +111,18 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
         }
         "MESSAGE_CREATE" => {
             if let Ok(m) = Message::deserialize(&data) {
-                if let Some(kind) = notifications::for_message(&s.store, &m, &data) {
+                let notify = notifications::for_message(&s.store, &m, &data);
+                if let Some(kind) = notify {
                     notifications::post(kind);
+                }
+                let is_self = s.store.user.as_ref().is_some_and(|me| me.id == m.author.id);
+                if !is_self && s.channel.as_deref() != Some(m.channel_id.as_str()) {
+                    let mentioned = s.store.user.as_ref().is_some_and(|me| {
+                        data["mentions"]
+                            .as_array()
+                            .is_some_and(|ms| ms.iter().any(|u| u["id"].as_str() == Some(&me.id)))
+                    });
+                    s.store.mark_unread(&m.channel_id, mentioned);
                 }
                 s.store.activity(&m);
                 s.store.typing.clear(&m.channel_id, &m.author.id);
@@ -149,6 +159,9 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
                     if let Some(content) = data["content"].as_str() {
                         m.content = content.into();
                     }
+                    if let Some(edited) = data["edited_timestamp"].as_str() {
+                        m.edited_timestamp = Some(edited.into());
+                    }
                     // Missing fields on a partial update leave cached media unchanged.
                     if let Ok(embeds) = serde_json::from_value(data["embeds"].clone()) {
                         m.embeds = embeds;
@@ -161,9 +174,42 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
         }
         "MESSAGE_DELETE" => {
             if let (Some(channel), Some(id)) = (data["channel_id"].as_str(), data["id"].as_str()) {
-                if let Some(ms) = s.store.messages.get_mut(channel) {
-                    ms.retain(|m| m.id != id);
-                }
+                s.store.delete_message(channel, id);
+                s.clear_message_targets(channel, id);
+            }
+        }
+        "MESSAGE_REACTION_ADD" | "MESSAGE_REACTION_REMOVE" => {
+            if let (Some(channel), Some(message_id), Ok(emoji)) = (
+                data["channel_id"].as_str(),
+                data["message_id"].as_str(),
+                serde_json::from_value::<crate::model::Emoji>(data["emoji"].clone()),
+            ) {
+                let is_me = data["user_id"]
+                    .as_str()
+                    .is_some_and(|uid| s.store.user.as_ref().is_some_and(|me| me.id == uid));
+                s.store.apply_reaction(
+                    channel,
+                    message_id,
+                    emoji,
+                    name == "MESSAGE_REACTION_ADD",
+                    is_me,
+                );
+            }
+        }
+        "MESSAGE_REACTION_REMOVE_EMOJI" => {
+            if let (Some(channel), Some(message_id), Ok(emoji)) = (
+                data["channel_id"].as_str(),
+                data["message_id"].as_str(),
+                serde_json::from_value::<crate::model::Emoji>(data["emoji"].clone()),
+            ) {
+                s.store.remove_reaction_emoji(channel, message_id, &emoji);
+            }
+        }
+        "MESSAGE_REACTION_REMOVE_ALL" => {
+            if let (Some(channel), Some(message_id)) =
+                (data["channel_id"].as_str(), data["message_id"].as_str())
+            {
+                s.store.clear_reactions(channel, message_id);
             }
         }
         _ => {}
@@ -223,6 +269,7 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
                 s.sending = false;
                 match result {
                     Ok(m) => {
+                        s.replying_to = None;
                         s.store.activity(&m);
                         s.store.typing.reset(&m.channel_id);
                         s.drafts.remove(&m.channel_id);
@@ -233,6 +280,39 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
                     Err(error) => s.error = error,
                 }
             }
+            Event::Edited(result) => {
+                s.sending = false;
+                match result {
+                    Ok(m) => s.finish_edit(m),
+                    Err(error) => s.error = error,
+                }
+            }
+            Event::Deleted {
+                channel,
+                message_id,
+                result,
+            } => match result {
+                Ok(()) => {
+                    s.store.delete_message(&channel, &message_id);
+                    s.clear_message_targets(&channel, &message_id);
+                    s.error.clear();
+                }
+                Err(error) => s.error = error,
+            },
+            Event::Reacted {
+                channel,
+                message_id,
+                emoji,
+                add,
+                result,
+            } => match result {
+                Ok(()) => {
+                    s.store
+                        .apply_reaction(&channel, &message_id, emoji, add, true);
+                    s.error.clear();
+                }
+                Err(error) => s.error = error,
+            },
             Event::Search {
                 query,
                 offset,
@@ -706,5 +786,102 @@ mod tests {
             .map(|m| m.id.as_str())
             .collect();
         assert_eq!(ids, ["9001"]);
+    }
+
+    #[test]
+    fn reaction_remove_emoji_clears_only_matching_emoji() {
+        let mut s = State::default();
+        let (network, mut commands) = crate::network::Network::mock();
+        s.network = Some(network);
+        s.store.user = Some(User {
+            id: "1".into(),
+            username: "You".into(),
+            global_name: None,
+        });
+        let m: Message = serde_json::from_value(json!({
+            "id": "50",
+            "channel_id": "2",
+            "author": {"id": "2", "username": "Ada"},
+            "content": "hello",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "reactions": [
+                {"count": 2, "me": true, "emoji": {"name": "👍"}},
+                {"count": 1, "me": false, "emoji": {"name": "🔥"}}
+            ]
+        }))
+        .unwrap();
+        s.store.insert(m);
+
+        dispatch(
+            &mut s,
+            "MESSAGE_REACTION_REMOVE_EMOJI",
+            json!({
+                "channel_id": "2",
+                "message_id": "50",
+                "emoji": {"name": "👍"}
+            }),
+        );
+        let reactions = &s.store.messages["2"][0].reactions;
+        assert_eq!(reactions.len(), 1);
+        assert_eq!(reactions[0].emoji.name.as_deref(), Some("🔥"));
+
+        // Clicking +1 afterward adds the reaction back instead of removing.
+        s.toggle_reaction("2".into(), "50".into(), crate::model::Emoji::unicode("👍"));
+        match commands.try_recv().unwrap() {
+            crate::network::Command::React { add, .. } => assert!(add),
+            _ => panic!("expected Command::React"),
+        }
+    }
+
+    #[test]
+    fn unread_mention_counts_distinguish_ordinary_dm_and_silent_direct_mention() {
+        let mut s = State::default();
+        s.store.user = Some(User {
+            id: "1".into(),
+            username: "You".into(),
+            global_name: None,
+        });
+        s.channel = Some("100".into());
+        s.store.channels.insert(
+            "200".into(),
+            serde_json::from_value(json!({"id": "200", "type": 1})).unwrap(),
+        );
+        s.store.channels.insert(
+            "101".into(),
+            serde_json::from_value(json!({"id": "101", "type": 0, "guild_id": "g1"})).unwrap(),
+        );
+
+        // Ordinary DM without a direct mention: unread dot, 0 mentions.
+        dispatch(
+            &mut s,
+            "MESSAGE_CREATE",
+            json!({
+                "id": "60",
+                "channel_id": "200",
+                "author": {"id": "2", "username": "Ada"},
+                "content": "Hello",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "mentions": []
+            }),
+        );
+        assert!(s.store.is_unread("200"));
+        assert_eq!(s.store.mentions("200"), 0);
+
+        // Silent server message (flags: 4096) that directly mentions the user: unread + 1 mention.
+        dispatch(
+            &mut s,
+            "MESSAGE_CREATE",
+            json!({
+                "id": "61",
+                "channel_id": "101",
+                "author": {"id": "2", "username": "Ada"},
+                "content": "@You please review",
+                "timestamp": "2026-01-01T00:01:00Z",
+                "flags": 4096,
+                "mentions": [{"id": "1", "username": "You"}]
+            }),
+        );
+        assert!(s.store.is_unread("101"));
+        assert_eq!(s.store.mentions("101"), 1);
     }
 }

@@ -21,12 +21,29 @@ pub(super) fn send(s: &mut State, channel: String) {
         .max()
         .unwrap_or(0)
         .saturating_add(1);
+    let referenced_message = s
+        .replying_to
+        .take()
+        .filter(|r| r.channel == channel)
+        .map(|r| {
+            Box::new(crate::model::ReferencedMessage {
+                author: User {
+                    id: String::new(),
+                    username: r.author,
+                    global_name: None,
+                },
+                content: r.snippet,
+            })
+        });
     let message = Message {
         id: id.to_string(),
         channel_id: channel,
         author: s.store.user.clone().unwrap_or_else(local_user),
         content: s.draft.text.clone(),
         timestamp: "Demo · just now".into(),
+        edited_timestamp: None,
+        referenced_message,
+        reactions: Vec::new(),
         embeds: Vec::new(),
         attachments: Vec::new(),
     };
@@ -34,6 +51,21 @@ pub(super) fn send(s: &mut State, channel: String) {
     s.store.insert(message);
     s.draft.clear();
     s.error.clear();
+}
+pub(super) fn edit(s: &mut State, channel: String, message_id: String) {
+    if let Some(mut message) = s
+        .store
+        .messages
+        .get(&channel)
+        .and_then(|ms| ms.iter().find(|m| m.id == message_id))
+        .cloned()
+    {
+        message.content = s.draft.text.clone();
+        message.edited_timestamp = Some("Demo · edited".into());
+        s.finish_edit(message);
+    } else {
+        s.finish_edit_composer(&channel, &message_id);
+    }
 }
 fn local_user() -> User {
     User {

@@ -1,5 +1,5 @@
 use crate::{
-    model::{Channel, Message},
+    model::{Channel, Emoji, Message},
     search::{self, Query},
 };
 use reqwest::{Client, Method, StatusCode};
@@ -89,14 +89,56 @@ impl Api {
         let path = messages_path(channel, before, after, limit)?;
         self.request(Method::GET, &path, None).await
     }
-    pub async fn send(&self, channel: &str, content: &str) -> Result<Message, String> {
+    pub async fn send(
+        &self,
+        channel: &str,
+        content: &str,
+        reply_to: Option<&str>,
+    ) -> Result<Message, String> {
         valid_id(channel)?;
+        let body = send_body(content, reply_to)?;
         self.request(
             Method::POST,
             &format!("/channels/{channel}/messages"),
-            Some(json!({"content":content,"allowed_mentions":{"parse":[]}})),
+            Some(body),
         )
         .await
+    }
+    pub async fn edit_message(
+        &self,
+        channel: &str,
+        message_id: &str,
+        content: &str,
+    ) -> Result<Message, String> {
+        valid_id(channel)?;
+        valid_id(message_id)?;
+        self.request(
+            Method::PATCH,
+            &format!("/channels/{channel}/messages/{message_id}"),
+            Some(json!({"content": content, "allowed_mentions": {"parse": []}})),
+        )
+        .await
+    }
+    pub async fn delete_message(&self, channel: &str, message_id: &str) -> Result<(), String> {
+        valid_id(channel)?;
+        valid_id(message_id)?;
+        self.request(
+            Method::DELETE,
+            &format!("/channels/{channel}/messages/{message_id}"),
+            None,
+        )
+        .await
+    }
+    pub async fn react(
+        &self,
+        channel: &str,
+        message_id: &str,
+        emoji: &Emoji,
+        add: bool,
+    ) -> Result<(), String> {
+        let path = reaction_path(channel, message_id, emoji)?;
+        let method = if add { Method::PUT } else { Method::DELETE };
+        self.request(method, &path, None).await
     }
     pub async fn search(
         &self,
@@ -133,6 +175,25 @@ impl Api {
         self.request(Method::POST, "/users/@me/channels", Some(dm_body(user)?))
             .await
     }
+}
+fn send_body(content: &str, reply_to: Option<&str>) -> Result<Value, String> {
+    let mut body = json!({"content": content, "allowed_mentions": {"parse": []}});
+    if let Some(message_id) = reply_to {
+        valid_id(message_id)?;
+        body["message_reference"] = json!({
+            "message_id": message_id,
+            "fail_if_not_exists": false
+        });
+    }
+    Ok(body)
+}
+fn reaction_path(channel: &str, message_id: &str, emoji: &Emoji) -> Result<String, String> {
+    valid_id(channel)?;
+    valid_id(message_id)?;
+    let key = emoji.api_key()?;
+    Ok(format!(
+        "/channels/{channel}/messages/{message_id}/reactions/{key}/@me"
+    ))
 }
 fn dm_body(user: &str) -> Result<Value, String> {
     valid_id(user)?;
@@ -218,6 +279,30 @@ mod tests {
         for id in ["", "../science", "123?redirect=evil", "https://example.com"] {
             assert!(valid_id(id).is_err());
         }
+    }
+    #[test]
+    fn send_body_and_reaction_paths_validate_ids_and_emoji() {
+        let plain = super::send_body("hello", None).unwrap();
+        assert!(plain.get("message_reference").is_none());
+        let reply = super::send_body("hello", Some("987654")).unwrap();
+        assert_eq!(reply["message_reference"]["message_id"], "987654");
+        assert!(super::send_body("hello", Some("../bad")).is_err());
+
+        let unicode = super::Emoji::unicode("👍");
+        assert_eq!(
+            super::reaction_path("1", "2", &unicode).unwrap(),
+            "/channels/1/messages/2/reactions/%F0%9F%91%8D/@me"
+        );
+        let custom = super::Emoji {
+            id: Some("42".into()),
+            name: Some("rust_party".into()),
+        };
+        assert_eq!(
+            super::reaction_path("1", "2", &custom).unwrap(),
+            "/channels/1/messages/2/reactions/rust_party:42/@me"
+        );
+        let bad = super::Emoji::unicode("../evil");
+        assert!(super::reaction_path("1", "2", &bad).is_err());
     }
     #[test]
     fn retry_delay_is_clamped_to_a_sane_maximum() {
