@@ -3,6 +3,7 @@ mod events;
 mod message_media;
 #[cfg(test)]
 mod tests;
+mod time;
 mod voice_panel;
 
 use crate::{
@@ -178,6 +179,21 @@ fn send(s: &mut State, tx: &mut Tx) {
             channel,
             content: s.draft.text.clone(),
         });
+    }
+}
+fn send_typing(s: &mut State, _: &mut Tx) {
+    if s.demo || s.sending {
+        return;
+    }
+    let now = std::time::Instant::now();
+    if let Some(channel) = s.channel.clone() {
+        if s.store.typing.can_send(&channel, &s.draft.text, now)
+            && s.network
+                .as_ref()
+                .is_some_and(|n| n.tx.try_send(Command::Typing(channel.clone())).is_ok())
+        {
+            s.store.typing.sent(channel, now);
+        }
     }
 }
 fn label(value: impl Into<String>) -> El {
@@ -411,7 +427,11 @@ fn chat(s: &State) -> El {
                                     .font(type_::LABEL)
                                     .color(tok::accent(0, true)),
                             )
-                            .child(text(&m.timestamp).font(type_::BODY).color(t.text_secondary)),
+                            .child(
+                                text(time::format_timestamp(&m.timestamp))
+                                    .font(type_::BODY)
+                                    .color(t.text_secondary),
+                            ),
                     );
                 if !m.content.is_empty() {
                     item = item.child(label(&m.content).wrap_anywhere().w_full());
@@ -444,6 +464,10 @@ fn chat(s: &State) -> El {
                 })
                 .child(messages),
         );
+        let typing = s.store.typing.label(channel, std::time::Instant::now());
+        if !typing.is_empty() {
+            main = main.child(text(typing).font(type_::BODY).color(t.text_secondary));
+        }
         main = main.child(
             row()
                 .gap(8.0)
@@ -460,6 +484,7 @@ fn chat(s: &State) -> El {
                         .color(t.text)
                         .placeholder("Write a message…", t.text_secondary)
                         .on_edit(|s: &mut State| &mut s.draft)
+                        .on_input_change(send_typing)
                         .on_submit(send),
                 )
                 .child(el().w(90.0).child(button(
@@ -546,21 +571,25 @@ fn demo(s: &mut State) {
     )
     .unwrap();
     s.store.channels.insert(dm.id.clone(), dm);
-    for (i, name, content) in [
+    let now = jiff::Timestamp::now();
+    for (i, name, content, timestamp) in [
         (
             1,
             "Ada",
             "Welcome to Rustcord. A little less noise, a little more conversation.",
+            (now - jiff::Span::new().hours(49)).to_string(),
         ),
         (
             2,
             "River",
             "Text chat is here. Messages stay in memory, not on disk.",
+            (now - jiff::Span::new().minutes(4)).to_string(),
         ),
         (
             3,
             "Ada",
             "The gateway and REST client run off the UI thread. Voice can join later.",
+            now.to_string(),
         ),
     ] {
         s.store.insert(Message {
@@ -572,7 +601,7 @@ fn demo(s: &mut State) {
                 global_name: None,
             },
             content: content.into(),
-            timestamp: format!("2026-11-23T10:0{i}:00Z"),
+            timestamp,
             embeds: Vec::new(),
             attachments: Vec::new(),
         });

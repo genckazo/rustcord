@@ -67,4 +67,6 @@ All scenes render with Rune headlessly, without reading the OS keychain or makin
 
 Demo scenes are locally interactive: sending appends an in-memory demo message, and voice joins, mute, deafen, disconnect and DM calls change simulated state without opening devices or making network requests. Changes disappear when the process exits.
 
+Supply-chain checks (also run by `.github/workflows/supply-chain.yml` on PRs, pushes to main and weekly): `cargo audit` (config in `.cargo/audit.toml`) and `cargo deny --locked check` (config in `deny.toml`). Ignored advisories are listed with their reason in both files.
+
 On macOS, `bash scripts/bundle-macos.sh` creates `dist/Rustcord.app` (macOS 11+). The app is unsigned and not notarized; it is a development bundle, built for the runner's architecture, not a universal binary. CI uploads a zipped bundle preserving executable permissions.

@@ -5,6 +5,7 @@ mod model;
 mod network;
 mod notifications;
 mod store;
+mod typing;
 mod ui;
 mod voice;
 
