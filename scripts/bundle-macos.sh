@@ -48,6 +48,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>$bundle_version</string>
   <key>LSMinimumSystemVersion</key><string>$MACOSX_DEPLOYMENT_TARGET</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Rustcord uses your microphone to transmit audio during Discord voice calls. Audio is never recorded to disk.</string>
 </dict></plist>
 PLIST
 plutil -lint "$app/Contents/Info.plist"

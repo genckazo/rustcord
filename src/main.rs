@@ -8,6 +8,7 @@ mod search;
 mod store;
 mod typing;
 mod ui;
+mod voice;
 
 fn main() {
     ui::run();
