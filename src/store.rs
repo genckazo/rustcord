@@ -33,6 +33,9 @@ pub struct Store {
     recency: VecDeque<String>,
     /// Selected channel, exempt from eviction.
     pinned: Option<String>,
+    /// Newest cached snowflake per channel when a Latest refetch was issued;
+    /// only messages newer than this survive the reply.
+    latest_since: HashMap<String, u64>,
 }
 impl Store {
     pub fn can_page(&self, channel: &str, direction: Direction, loading: bool) -> bool {
@@ -156,6 +159,9 @@ impl Store {
     pub fn pin(&mut self, channel: Option<String>) {
         self.pinned = channel;
     }
+    pub fn pinned(&self) -> Option<&str> {
+        self.pinned.as_deref()
+    }
     /// Ensure `channel` has a transcript buffer, marking it most recently used.
     /// Returns the least recently used channel evicted past CHANNEL_CAP, if any.
     pub fn ensure(&mut self, channel: &str) -> Option<String> {
@@ -173,12 +179,13 @@ impl Store {
             let Some(candidate) = self.recency.pop_front() else {
                 break;
             };
-            if self.pinned.as_ref() == Some(&candidate) {
+            if self.pinned() == Some(candidate.as_str()) {
                 self.recency.push_back(candidate);
                 continue;
             }
             self.messages.remove(&candidate);
             self.windows.remove(&candidate);
+            self.latest_since.remove(&candidate);
             evicted = Some(candidate);
         }
         evicted
@@ -194,6 +201,18 @@ impl Store {
         }
         self.merge(message, Direction::Newer)
     }
+    /// Marks a `Direction::Latest` refetch as in flight: the newest cached
+    /// snowflake becomes the boundary live arrivals are compared against
+    /// when the reply lands.
+    pub fn request_latest(&mut self, channel: &str) {
+        let since = self
+            .messages
+            .get(channel)
+            .and_then(|ms| ms.back())
+            .map(|m| snowflake(&m.id))
+            .unwrap_or(0);
+        self.latest_since.insert(channel.to_owned(), since);
+    }
     pub fn history(
         &mut self,
         channel: &str,
@@ -204,7 +223,15 @@ impl Store {
         let short = page.len() < limit;
         self.ensure(channel);
         if direction == Direction::Latest {
-            self.messages.get_mut(channel).unwrap().clear();
+            // Keep only live arrivals newer than the transcript was when the
+            // refetch was issued; anything older may be stale. A request
+            // without a recorded boundary clears, as before.
+            let since = self.latest_since.remove(channel);
+            let messages = self.messages.get_mut(channel).unwrap();
+            match since {
+                Some(since) => messages.retain(|m| snowflake(&m.id) > since),
+                None => messages.clear(),
+            }
             self.windows.remove(channel);
         }
         let window = self.windows.entry(channel.to_owned()).or_default();
@@ -247,12 +274,13 @@ impl Store {
         self.channels.remove(id);
         self.messages.remove(id);
         self.windows.remove(id);
+        self.latest_since.remove(id);
         self.voice_states
             .retain(|_, state| state.channel_id.as_deref() != Some(id));
         if let Some(index) = self.recency.iter().position(|c| c == id) {
             self.recency.remove(index);
         }
-        if self.pinned.as_deref() == Some(id) {
+        if self.pinned() == Some(id) {
             self.pinned = None;
         }
     }
