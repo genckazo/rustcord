@@ -2,9 +2,11 @@ use super::State;
 use crate::{
     model::{Channel, Guild, Message, User, VoiceState},
     network::Event,
+    notifications,
     store::Store,
 };
 use rune::Tx;
+use serde::Deserialize;
 use serde_json::Value;
 
 fn dispatch(s: &mut State, name: &str, data: Value) {
@@ -68,7 +70,10 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
             }
         }
         "MESSAGE_CREATE" => {
-            if let Ok(m) = serde_json::from_value::<Message>(data) {
+            if let Ok(m) = Message::deserialize(&data) {
+                if let Some(kind) = notifications::for_message(&s.store, &m, &data) {
+                    notifications::post(kind);
+                }
                 s.store.insert(m);
             }
         }
@@ -82,6 +87,13 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
                 {
                     if let Some(content) = data["content"].as_str() {
                         m.content = content.into();
+                    }
+                    // Missing fields on a partial update leave cached media unchanged.
+                    if let Ok(embeds) = serde_json::from_value(data["embeds"].clone()) {
+                        m.embeds = embeds;
+                    }
+                    if let Ok(attachments) = serde_json::from_value(data["attachments"].clone()) {
+                        m.attachments = attachments;
                     }
                 }
             }
@@ -240,6 +252,47 @@ mod tests {
         );
         assert!(s.store.voice_states.is_empty());
     }
+    #[test]
+    fn partial_message_updates_set_keep_and_clear_media() {
+        let mut state = State::default();
+        dispatch(
+            &mut state,
+            "MESSAGE_CREATE",
+            json!({"id":"10","channel_id":"2","author":{"id":"1","username":"Ada"},
+                   "content":"original","timestamp":"2026-01-01T00:00:00Z",
+                   "attachments":[{"id":"11","filename":"notes.txt","size":128,
+                     "url":"https://cdn.discordapp.com/attachments/2/11/notes.txt"}]}),
+        );
+        dispatch(
+            &mut state,
+            "MESSAGE_UPDATE",
+            json!({"id":"10","channel_id":"2","embeds":[{"title":"Fetched link"}]}),
+        );
+        let message = &state.store.messages["2"][0];
+        assert_eq!(message.content, "original");
+        assert_eq!(message.attachments[0].filename, "notes.txt");
+        assert_eq!(message.embeds[0].title.as_deref(), Some("Fetched link"));
+
+        dispatch(
+            &mut state,
+            "MESSAGE_UPDATE",
+            json!({"id":"10","channel_id":"2","content":"edited","embeds":null}),
+        );
+        let message = &state.store.messages["2"][0];
+        assert_eq!(message.content, "edited");
+        assert_eq!(message.embeds.len(), 1);
+        assert_eq!(message.attachments.len(), 1);
+
+        dispatch(
+            &mut state,
+            "MESSAGE_UPDATE",
+            json!({"id":"10","channel_id":"2","embeds":[],"attachments":[]}),
+        );
+        let message = &state.store.messages["2"][0];
+        assert!(message.embeds.is_empty());
+        assert!(message.attachments.is_empty());
+    }
+
     #[test]
     fn guild_channels_and_categories() {
         let mut state = State::default();

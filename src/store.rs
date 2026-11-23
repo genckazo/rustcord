@@ -111,6 +111,8 @@ mod tests {
             author: User::default(),
             content: "hello".into(),
             timestamp: "now".into(),
+            embeds: Vec::new(),
+            attachments: Vec::new(),
         }
     }
     #[test]
