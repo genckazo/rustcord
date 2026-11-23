@@ -178,6 +178,23 @@ impl Network {
             stop: Some(stop),
         }
     }
+    /// A network handle that runs no worker, for tests asserting on
+    /// queued commands. Returns the receiver commands arrive on.
+    #[cfg(test)]
+    pub fn stub() -> (Self, mpsc::Receiver<Command>) {
+        let (tx, commands) = mpsc::channel(8);
+        let (voice, _voice_commands) = mpsc::channel(8);
+        let (_events, rx) = mpsc::channel(8);
+        (
+            Self {
+                tx,
+                voice,
+                rx,
+                stop: None,
+            },
+            commands,
+        )
+    }
 }
 impl Drop for Network {
     fn drop(&mut self) {

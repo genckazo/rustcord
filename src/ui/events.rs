@@ -50,6 +50,12 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
                     apply_call(s, call);
                 }
             }
+            // The store reset dropped every transcript and the LRU pin; keep
+            // the open channel selected, pinned and freshly fetched.
+            if let Some(channel) = s.channel.clone() {
+                s.store.pin(Some(channel.clone()));
+                s.history(channel, Direction::Latest);
+            }
         }
         "VOICE_STATE_UPDATE" => {
             if let Ok(state) = serde_json::from_value(data) {
@@ -622,5 +628,39 @@ mod tests {
         assert_eq!(state.store.channels["3"].label(), "renamed");
         dispatch(&mut state, "CHANNEL_DELETE", json!({"id":"3"}));
         assert!(!state.store.channels.contains_key("3"));
+    }
+
+    #[test]
+    fn ready_repins_and_refetches_the_open_channel() {
+        use crate::network::Command;
+        let mut s = State::default();
+        let (network, mut commands) = crate::network::Network::stub();
+        s.network = Some(network);
+        s.channel = Some("2".into());
+        s.store.pin(Some("2".into()));
+        s.store.ensure("2");
+        dispatch(
+            &mut s,
+            "READY",
+            json!({"user":{"id":"1","username":"Me"},"private_channels":[]}),
+        );
+        // The store was reset: the transcript is gone, but the selection
+        // stays pinned and its history is requested again.
+        assert!(!s.store.messages.contains_key("2"));
+        assert_eq!(s.channel.as_deref(), Some("2"));
+        assert_eq!(s.store.pinned(), Some("2"));
+        assert!(s.loading.contains("2"));
+        match commands.try_recv() {
+            Ok(Command::History {
+                channel,
+                direction,
+                cursor,
+            }) => {
+                assert_eq!(channel, "2");
+                assert_eq!(direction, Direction::Latest);
+                assert!(cursor.is_none());
+            }
+            _ => panic!("expected a history refetch for the open channel"),
+        }
     }
 }

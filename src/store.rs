@@ -156,6 +156,9 @@ impl Store {
     pub fn pin(&mut self, channel: Option<String>) {
         self.pinned = channel;
     }
+    pub fn pinned(&self) -> Option<&str> {
+        self.pinned.as_deref()
+    }
     /// Ensure `channel` has a transcript buffer, marking it most recently used.
     /// Returns the least recently used channel evicted past CHANNEL_CAP, if any.
     pub fn ensure(&mut self, channel: &str) -> Option<String> {
@@ -173,7 +176,7 @@ impl Store {
             let Some(candidate) = self.recency.pop_front() else {
                 break;
             };
-            if self.pinned.as_ref() == Some(&candidate) {
+            if self.pinned() == Some(candidate.as_str()) {
                 self.recency.push_back(candidate);
                 continue;
             }
@@ -252,7 +255,7 @@ impl Store {
         if let Some(index) = self.recency.iter().position(|c| c == id) {
             self.recency.remove(index);
         }
-        if self.pinned.as_deref() == Some(id) {
+        if self.pinned() == Some(id) {
             self.pinned = None;
         }
     }
