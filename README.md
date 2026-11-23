@@ -48,4 +48,24 @@ target/release/rustcord --scene main --snap screenshots/main.png
 
 Both scenes render with Rune headlessly, without reading the OS keychain or making network requests; the main scene uses fake data. A usable GPU backend is required (Mesa llvmpipe works on Linux). Never run headless capture tooling against a real logged-in session: diagnostic output may contain visible messages.
 
-On macOS, `bash scripts/bundle-macos.sh` creates `dist/Rustcord.app` (macOS 11+). The app is unsigned and not notarized; it is a development bundle, built for the runner's architecture, not a universal binary. CI uploads a zipped bundle preserving executable permissions.
+## macOS packages
+
+On macOS with Xcode Command Line Tools and stable Rust installed, run:
+
+```sh
+bash scripts/bundle-macos.sh
+```
+
+This builds `dist/Rustcord.app` and `dist/Rustcord-<version>-macos-<arch>.dmg` for the installed Rust toolchain's architecture, targeting macOS 11 or newer. Mount the DMG and drag Rustcord to Applications. CI builds and checks separate packages for Apple silicon (`arm64`) and Intel (`x86_64`) and uploads each DMG alongside a ZIP of the app.
+
+Local and CI packages are ad hoc signed and not notarized. They are for development and may be blocked by Gatekeeper when downloaded. For distribution, install a **Developer ID Application** certificate in your keychain and set `MACOS_SIGNING_IDENTITY` to its name when running the script. Then run the following with the resulting DMG path and a configured notarytool keychain profile:
+
+```sh
+xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+# Continue only if notarization is accepted.
+xcrun stapler staple "$DMG"
+xcrun stapler validate "$DMG"
+spctl --assess --type open --context context:primary-signature -v "$DMG"
+```
+
+Distribute the notarized DMG, not the development ZIP.

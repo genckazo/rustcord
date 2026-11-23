@@ -16,14 +16,29 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
   macos:
-    runs-on: macos-latest
+    name: macOS package (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - run: test "$(uname -m)" = "$EXPECTED_ARCH"
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
       - run: bash scripts/bundle-macos.sh
       - run: ditto -c -k --sequesterRsrc --keepParent dist/Rustcord.app dist/Rustcord-macos.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Rustcord-macos
-          path: dist/Rustcord-macos.zip
+          name: Rustcord-macos-${{ matrix.arch }}
+          path: |
+            dist/Rustcord-macos.zip
+            dist/Rustcord-*-macos-${{ matrix.arch }}.dmg
+          if-no-files-found: error
