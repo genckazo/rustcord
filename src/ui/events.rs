@@ -1,6 +1,6 @@
 use super::State;
 use crate::{
-    model::{Channel, Guild, Message, User},
+    model::{Channel, Guild, Message, User, VoiceState},
     network::Event,
     store::Store,
 };
@@ -25,6 +25,31 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
                 for c in channels {
                     s.store.channels.insert(c.id.clone(), c);
                 }
+            }
+            if let Ok(states) =
+                serde_json::from_value::<Vec<VoiceState>>(data["voice_states"].clone())
+            {
+                for state in states {
+                    s.store.voice_state(state);
+                }
+            }
+            if let Some(calls) = data["calls"].as_array() {
+                for call in calls {
+                    apply_call(s, call);
+                }
+            }
+        }
+        "VOICE_STATE_UPDATE" => {
+            if let Ok(state) = serde_json::from_value(data) {
+                s.store.voice_state(state);
+            }
+        }
+        "CALL_CREATE" | "CALL_UPDATE" => apply_call(s, &data),
+        "CALL_DELETE" => {
+            if let Some(channel) = data["channel_id"].as_str() {
+                s.store
+                    .voice_states
+                    .retain(|_, state| state.channel_id.as_deref() != Some(channel));
             }
         }
         "GUILD_CREATE" => {
@@ -82,6 +107,7 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
     while let Some(event) = s.network.as_mut().and_then(|n| n.rx.try_recv().ok()) {
         changed = true;
         match event {
+            Event::Voice(voice) => s.voice = voice,
             Event::Status(status) => s.status = status,
             Event::Dispatch(name, data) => dispatch(s, &name, data),
             Event::History(channel, result) => {
@@ -127,6 +153,20 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
     changed
 }
 
+fn apply_call(s: &mut State, data: &Value) {
+    if let Some(states) = data["voice_states"].as_array() {
+        for state in states {
+            let mut state = state.clone();
+            if state["channel_id"].is_null() {
+                state["channel_id"] = data["channel_id"].clone();
+            }
+            if let Ok(state) = serde_json::from_value(state) {
+                s.store.voice_state(state);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +205,41 @@ mod tests {
         assert!(state.store.messages["2"].is_empty());
     }
 
+    #[test]
+    fn voice_members_ready_moves_leave_and_invalid_states() {
+        let mut s = State::default();
+        dispatch(
+            &mut s,
+            "READY",
+            json!({"user":{"id":"1","username":"Me"},"guilds":[{"id":"10","name":"Guild","voice_states":[{"user_id":"2","channel_id":"20","member":{"user":{"id":"2","username":"Ada"}}}]}],"calls":[{"channel_id":"30","voice_states":[{"user_id":"1"}]}]}),
+        );
+        assert_eq!(
+            s.store.voice_members("20"),
+            vec![("2".into(), "Ada".into())]
+        );
+        assert_eq!(s.store.voice_members("30"), vec![("1".into(), "Me".into())]);
+        dispatch(
+            &mut s,
+            "VOICE_STATE_UPDATE",
+            json!({"guild_id":"10","user_id":"2","channel_id":"21"}),
+        );
+        assert!(s.store.voice_members("20").is_empty());
+        assert_eq!(s.store.voice_members("21").len(), 1);
+        dispatch(
+            &mut s,
+            "VOICE_STATE_UPDATE",
+            json!({"guild_id":"10","user_id":"2","channel_id":null}),
+        );
+        dispatch(&mut s, "VOICE_STATE_UPDATE", json!({}));
+        assert!(s.store.voice_members("21").is_empty());
+        assert_eq!(s.store.voice_members("30").len(), 1);
+        dispatch(
+            &mut s,
+            "READY",
+            json!({"user":{"id":"1","username":"Me"},"guilds":[]}),
+        );
+        assert!(s.store.voice_states.is_empty());
+    }
     #[test]
     fn guild_channels_and_categories() {
         let mut state = State::default();

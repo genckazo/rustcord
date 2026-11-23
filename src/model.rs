@@ -19,6 +19,8 @@ pub struct Guild {
     pub name: String,
     #[serde(default)]
     pub channels: Vec<Channel>,
+    #[serde(default)]
+    pub voice_states: Vec<VoiceState>,
 }
 fn unknown() -> String {
     "Loading server…".into()
@@ -59,4 +61,18 @@ pub struct Message {
     #[serde(default)]
     pub content: String,
     pub timestamp: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct VoiceState {
+    pub user_id: String,
+    pub channel_id: Option<String>,
+    pub guild_id: Option<String>,
+    #[serde(default)]
+    pub member: Option<VoiceMember>,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct VoiceMember {
+    pub user: Option<User>,
+    pub nick: Option<String>,
 }

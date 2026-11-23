@@ -1,4 +1,5 @@
 mod events;
+mod voice_panel;
 
 use crate::{
     auth,
@@ -30,6 +31,7 @@ pub struct State {
     demo: bool,
     sending: bool,
     scroll_top: Rc<Cell<bool>>,
+    voice: crate::voice::Snapshot,
 }
 impl Default for State {
     fn default() -> Self {
@@ -49,10 +51,23 @@ impl Default for State {
             demo: false,
             sending: false,
             scroll_top: Rc::new(Cell::new(false)),
+            voice: crate::voice::Snapshot::default(),
         }
     }
 }
 impl State {
+    fn voice_command(&mut self, command: crate::voice::Command) {
+        if self.demo {
+            return;
+        }
+        if !self
+            .network
+            .as_ref()
+            .is_some_and(|n| n.voice.try_send(command).is_ok())
+        {
+            self.error = "Voice queue unavailable; try again.".into();
+        }
+    }
     fn command(&mut self, command: Command) -> bool {
         if self
             .network
@@ -131,6 +146,7 @@ fn logout(s: &mut State, _: &mut Tx) {
     s.sending = false;
     s.demo = false;
     s.status = "Offline".into();
+    s.voice = crate::voice::Snapshot::default();
     s.error = if auth::clear().is_err() {
         "Could not clear keychain. Remove rustcord/discord-token manually from your OS keychain."
             .into()
@@ -164,6 +180,14 @@ fn button(
     selected: bool,
     action: impl Fn(&mut State, &mut Tx) + 'static,
 ) -> El {
+    button_content(key, label(value), selected, action)
+}
+fn button_content(
+    key: impl Into<String>,
+    content: El,
+    selected: bool,
+    action: impl Fn(&mut State, &mut Tx) + 'static,
+) -> El {
     let t = tok::theme(true);
     el().key(key.into())
         .role("button")
@@ -176,7 +200,7 @@ fn button(
         .fill(if selected { t.control_off } else { t.card })
         .hover(t.hover)
         .on_press_tx(action)
-        .child(label(value))
+        .child(content)
 }
 fn login(s: &State) -> El {
     let t = tok::theme(true);
@@ -202,7 +226,7 @@ fn login(s: &State) -> El {
             .child(button("remember", if s.remember { "[✓] Remember me in the OS keychain" } else { "[ ] Remember me in the OS keychain" }, s.remember, |s, _| s.remember = !s.remember))
             .child(button("connect", "Connect →", true, connect))
             .child(text("Third-party user-token clients violate Discord’s terms. Your account may be restricted or terminated.").font(type_::BODY).color(t.text_secondary).wrap().w_full()))
-        .child(text("No telemetry · No message files · Text chat only").font(type_::BODY).color(t.text_secondary))
+        .child(text("No telemetry · No message or audio files").font(type_::BODY).color(t.text_secondary))
 }
 fn chat(s: &State) -> El {
     let t = tok::theme(true);
@@ -253,18 +277,39 @@ fn chat(s: &State) -> El {
     let mut channel_list = col().w_full().gap(6.0);
     let channel_button = |c: &Channel| {
         let id = c.id.clone();
-        button(
+        let guild = c.guild_id.clone();
+        let voice = c.kind == 2;
+        button_content(
             format!("channel-{id}"),
-            format!("# {}", c.label()),
-            s.channel.as_ref() == Some(&id),
-            move |s, tx| s.select(id.clone(), tx),
+            if voice {
+                voice_panel::speaker_label(c.label())
+            } else {
+                label(format!("# {}", c.label()))
+            },
+            s.channel.as_ref() == Some(&id)
+                || s.voice.target.as_ref().is_some_and(|t| t.channel == id),
+            move |s, tx| {
+                if voice {
+                    s.voice_command(crate::voice::Command::Join(
+                        crate::voice::handshake::Target {
+                            guild: guild.clone(),
+                            channel: id.clone(),
+                        },
+                    ));
+                } else {
+                    s.select(id.clone(), tx);
+                }
+            },
         )
     };
     for c in channels
         .iter()
-        .filter(|c| c.is_text() && c.parent_id.is_none())
+        .filter(|c| (c.is_text() || c.kind == 2) && c.parent_id.is_none())
     {
         channel_list = channel_list.child(channel_button(c));
+        if c.kind == 2 {
+            channel_list = channel_list.child(voice_panel::members(s, &c.id));
+        }
     }
     for category in channels.iter().filter(|c| c.kind == 4) {
         channel_list = channel_list.child(
@@ -275,9 +320,12 @@ fn chat(s: &State) -> El {
         );
         for c in channels
             .iter()
-            .filter(|c| c.is_text() && c.parent_id.as_ref() == Some(&category.id))
+            .filter(|c| (c.is_text() || c.kind == 2) && c.parent_id.as_ref() == Some(&category.id))
         {
             channel_list = channel_list.child(channel_button(c));
+            if c.kind == 2 {
+                channel_list = channel_list.child(voice_panel::members(s, &c.id));
+            }
         }
     }
     let channels = col()
@@ -302,6 +350,21 @@ fn chat(s: &State) -> El {
         );
     let mut main = col().grow(1.0).min_h(0.0).h_full().padding(24.0).gap(18.0);
     if let Some(channel) = &s.channel {
+        if s.store
+            .channels
+            .get(channel)
+            .is_some_and(|c| matches!(c.kind, 1 | 3))
+        {
+            let id = channel.clone();
+            main = main.child(button("dm-call", "Join call", false, move |s, _| {
+                s.voice_command(crate::voice::Command::Join(
+                    crate::voice::handshake::Target {
+                        guild: None,
+                        channel: id.clone(),
+                    },
+                ))
+            }));
+        }
         main = main.child(
             text(
                 s.store
@@ -417,6 +480,9 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
         } else {
             login(s)
         });
+    if s.voice.target.is_some() || !s.voice.status.is_empty() {
+        root = root.child(voice_panel::panel(s));
+    }
     if !s.error.is_empty() {
         root = root.child(
             text(&s.error)
@@ -511,7 +577,7 @@ pub fn run() {
             }
         }),
         poll: Some(events::poll),
-        scenes: &[("main", demo)],
+        scenes: &[("main", demo), ("voice", voice_panel::demo)],
         min_size: Some((800.0, 540.0)),
         ..AppSpec::new("Rustcord", (1120.0, 760.0), State::default, view)
     });

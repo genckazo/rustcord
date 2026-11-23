@@ -5,6 +5,7 @@ mod model;
 mod network;
 mod store;
 mod ui;
+mod voice;
 
 fn main() {
     ui::run();
