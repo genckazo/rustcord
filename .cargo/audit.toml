@@ -1,9 +1,63 @@
 # cargo-audit configuration. Keep the ignore list in sync with deny.toml.
 [advisories]
 ignore = [
+    # songbird -> davey -> p256 -> elliptic-curve -> crypto-bigint.
+    # elliptic-curve requires ^0.5; fixed crypto-bigint >=0.7.6 is incompatible.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    "RUSTSEC-2026-0387",
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> libcrux-sha3.
+    # hpke-rs requires ^0.0.8; fixed libcrux-sha3 >=0.0.10 is incompatible.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    "RUSTSEC-2026-0207",
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> libcrux-sha3.
+    # hpke-rs requires ^0.0.8; fixed libcrux-sha3 >=0.0.10 is incompatible.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    "RUSTSEC-2026-0208",
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> libcrux-sha3 -> libcrux-traits -> libcrux-secrets.
+    # libcrux-traits pins =0.0.5; fixed libcrux-secrets >=0.0.6 is incompatible.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    "RUSTSEC-2026-0212",
+    # songbird -> davey -> openmls -> fluvio-wasm-timer -> parking_lot -> instant.
+    # unmaintained with no fixed release; replacing the timer requires upstream changes.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    "RUSTSEC-2024-0384",
+    # songbird -> davey -> openmls -> fluvio-wasm-timer -> pin-utils.
+    # unmaintained with no fixed release; replacing timer macros requires upstream changes.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    "RUSTSEC-2026-0441",
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> optional hpke-rs-libcrux -> libcrux-aead -> libcrux-aesgcm.
+    # lockfile-only optional backend; no fixed release in the locked series.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    "RUSTSEC-2026-0209",
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> optional hpke-rs-libcrux -> libcrux-aead -> libcrux-aesgcm.
+    # lockfile-only optional backend; renamed crate requires upstream migration.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    "RUSTSEC-2026-0210",
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> optional hpke-rs-libcrux -> libcrux-aead -> libcrux-aesgcm.
+    # lockfile-only optional backend; no fixed release in the locked series.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    "RUSTSEC-2026-0211",
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> optional hpke-rs-libcrux -> libcrux-aead -> libcrux-chacha20poly1305.
+    # lockfile-only optional backend; =0.0.7 cannot select fixed >=0.0.8.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    "RUSTSEC-2026-0124",
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> optional hpke-rs-libcrux -> libcrux-kem.
+    # lockfile-only optional backend; ^0.0.7 cannot select fixed >=0.0.10.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    "RUSTSEC-2026-0330",
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> optional hpke-rs-libcrux -> libcrux-kem.
+    # lockfile-only optional backend; ^0.0.7 cannot select fixed >=0.0.10.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    "RUSTSEC-2026-0331",
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> libcrux-sha3 -> hax-lib -> hax-lib-macros -> proc-macro-error2.
+    # unmaintained with no fixed release; retained by libcrux's upstream macros.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    "RUSTSEC-2026-0173",
     # songbird -> derivative: unmaintained compile-time macros; no fixed release.
+    # Revisit when davey/openmls_rust_crypto/p256 release fixes.
     "RUSTSEC-2024-0388",
     # songbird -> serde-aux -> chrono: timestamp serde only; no fixed release.
+    # Revisit when davey/openmls_rust_crypto/p256 release fixes.
     "RUSTSEC-2026-0543",
     "RUSTSEC-2026-0370", # zvariant unmaintained; transitive via rune/keyring (zbus 5)
     "RUSTSEC-2026-0371", # zbus_names unmaintained; transitive via rune/keyring (zbus 5)

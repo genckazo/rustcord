@@ -15,11 +15,65 @@ targets = [
 unmaintained = "all"
 yanked = "deny"
 ignore = [
+    # songbird -> davey -> p256 -> elliptic-curve -> crypto-bigint.
+    # elliptic-curve requires ^0.5; fixed crypto-bigint >=0.7.6 is incompatible.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    { id = "RUSTSEC-2026-0387", reason = "elliptic-curve requires ^0.5; fixed crypto-bigint >=0.7.6 is incompatible; owner-approved pending upstream fixes" },
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> libcrux-sha3.
+    # hpke-rs requires ^0.0.8; fixed libcrux-sha3 >=0.0.10 is incompatible.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    { id = "RUSTSEC-2026-0207", reason = "hpke-rs requires ^0.0.8; fixed libcrux-sha3 >=0.0.10 is incompatible; owner-approved pending upstream fixes" },
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> libcrux-sha3.
+    # hpke-rs requires ^0.0.8; fixed libcrux-sha3 >=0.0.10 is incompatible.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    { id = "RUSTSEC-2026-0208", reason = "hpke-rs requires ^0.0.8; fixed libcrux-sha3 >=0.0.10 is incompatible; owner-approved pending upstream fixes" },
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> libcrux-sha3 -> libcrux-traits -> libcrux-secrets.
+    # libcrux-traits pins =0.0.5; fixed libcrux-secrets >=0.0.6 is incompatible.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    { id = "RUSTSEC-2026-0212", reason = "libcrux-traits pins =0.0.5; fixed libcrux-secrets >=0.0.6 is incompatible; owner-approved pending upstream fixes" },
+    # songbird -> davey -> openmls -> fluvio-wasm-timer -> parking_lot -> instant.
+    # unmaintained with no fixed release; replacing the timer requires upstream changes.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    { id = "RUSTSEC-2024-0384", reason = "unmaintained with no fixed release; replacing the timer requires upstream changes; owner-approved pending upstream fixes" },
+    # songbird -> davey -> openmls -> fluvio-wasm-timer -> pin-utils.
+    # unmaintained with no fixed release; replacing timer macros requires upstream changes.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    { id = "RUSTSEC-2026-0441", reason = "unmaintained with no fixed release; replacing timer macros requires upstream changes; owner-approved pending upstream fixes" },
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> optional hpke-rs-libcrux -> libcrux-aead -> libcrux-aesgcm.
+    # lockfile-only optional backend; no fixed release in the locked series.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    { id = "RUSTSEC-2026-0209", reason = "lockfile-only optional backend; no fixed release in the locked series; owner-approved pending upstream fixes" },
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> optional hpke-rs-libcrux -> libcrux-aead -> libcrux-aesgcm.
+    # lockfile-only optional backend; renamed crate requires upstream migration.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    { id = "RUSTSEC-2026-0210", reason = "lockfile-only optional backend; renamed crate requires upstream migration; owner-approved pending upstream fixes" },
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> optional hpke-rs-libcrux -> libcrux-aead -> libcrux-aesgcm.
+    # lockfile-only optional backend; no fixed release in the locked series.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    { id = "RUSTSEC-2026-0211", reason = "lockfile-only optional backend; no fixed release in the locked series; owner-approved pending upstream fixes" },
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> optional hpke-rs-libcrux -> libcrux-aead -> libcrux-chacha20poly1305.
+    # lockfile-only optional backend; =0.0.7 cannot select fixed >=0.0.8.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    { id = "RUSTSEC-2026-0124", reason = "lockfile-only optional backend; ^0.0.7 cannot select fixed >=0.0.8; owner-approved pending upstream fixes" },
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> optional hpke-rs-libcrux -> libcrux-kem.
+    # lockfile-only optional backend; ^0.0.7 cannot select fixed >=0.0.10.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    { id = "RUSTSEC-2026-0330", reason = "lockfile-only optional backend; ^0.0.7 cannot select fixed >=0.0.10; owner-approved pending upstream fixes" },
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> optional hpke-rs-libcrux -> libcrux-kem.
+    # lockfile-only optional backend; ^0.0.7 cannot select fixed >=0.0.10.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    { id = "RUSTSEC-2026-0331", reason = "lockfile-only optional backend; ^0.0.7 cannot select fixed >=0.0.10; owner-approved pending upstream fixes" },
+    # songbird -> davey -> openmls_rust_crypto -> hpke-rs -> libcrux-sha3 -> hax-lib -> hax-lib-macros -> proc-macro-error2.
+    # unmaintained with no fixed release; retained by libcrux's upstream macros.
+    # Owner-approved; revisit when davey/openmls_rust_crypto/p256 release fixes.
+    { id = "RUSTSEC-2026-0173", reason = "unmaintained with no fixed release; retained by libcrux's upstream macros; owner-approved pending upstream fixes" },
     # songbird 0.6.1 -> derivative: unmaintained derive macros, no fixed release;
     # retained for the pinned driver, compile-time only.
+    # Revisit when davey/openmls_rust_crypto/p256 release fixes.
     { id = "RUSTSEC-2024-0388", reason = "songbird requires derivative; compile-time macros, no fixed release" },
     # songbird -> serde-aux -> chrono: unmaintained, no fixed release.
     # Used for upstream timestamp serde, not for Rustcord's timestamp display.
+    # Revisit when davey/openmls_rust_crypto/p256 release fixes.
     { id = "RUSTSEC-2026-0543", reason = "songbird serde-aux requires chrono; no fixed release, timestamp serde only" },
     # zbus 5.x helper crates, folded into zbus 6. Pulled in on Linux only, via
     # Rune's accesskit_unix (pinned git rev) and keyring's Secret Service store.

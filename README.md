@@ -54,6 +54,33 @@ Message caches retain at most 200 newest messages per channel. Older pages beyon
 
 Songbird 0.6.1 has a receive-only build bug: `udp_rx.rs` imports `dashmap` but its manifest enables it only with `gateway`. The vendored, pinned release enables `dep:dashmap` with `receive` and upgrades its ringbuf requirement to the security-fixed 0.5 series; see `vendor/songbird/RUSTCORD-PATCH.md`. No integration feature is enabled as a workaround. Symphonia's PCM codec is enabled explicitly for raw microphone playback.
 
+## Known advisories
+
+The owner accepts these advisory-specific exceptions for the pinned voice stack;
+this includes cryptographic correctness and timing risks, not just maintenance
+warnings. Compatible updates were attempted. Parent version constraints block
+fixed versions; revisit when davey/openmls_rust_crypto/p256 release fixes.
+Full dependency paths and reasons are in `deny.toml` and `.cargo/audit.toml`.
+
+| Dependency | Accepted RustSec advisories |
+| --- | --- |
+| crypto-bigint | RUSTSEC-2026-0387 |
+| libcrux-sha3 | RUSTSEC-2026-0207, RUSTSEC-2026-0208 |
+| libcrux-secrets | RUSTSEC-2026-0212 |
+| libcrux-aesgcm (lockfile-only optional backend) | RUSTSEC-2026-0209, RUSTSEC-2026-0210, RUSTSEC-2026-0211 |
+| libcrux-chacha20poly1305 (lockfile-only optional backend) | RUSTSEC-2026-0124 |
+| libcrux-kem (lockfile-only optional backend) | RUSTSEC-2026-0330, RUSTSEC-2026-0331 |
+| instant | RUSTSEC-2024-0384 |
+| pin-utils | RUSTSEC-2026-0441 |
+| proc-macro-error2 | RUSTSEC-2026-0173 |
+| derivative | RUSTSEC-2024-0388 |
+| chrono | RUSTSEC-2026-0543 |
+| zvariant / zbus_names / zvariant_derive (existing Rune/keyring exceptions) | RUSTSEC-2026-0370, RUSTSEC-2026-0371, RUSTSEC-2026-0372 |
+
+Unused Serenity/Twilight dependencies were removed from the vendored manifest,
+eliminating their old rustls/webpki stack instead of exempting its advisories.
+Ringbuf was upgraded to a fixed release rather than exempted.
+
 ## Checks and deterministic screenshots
 
 ```sh

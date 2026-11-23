@@ -52,7 +52,6 @@ default = [
     "driver",
     "gateway",
     "rustls",
-    "serenity",
     "tungstenite",
 ]
 driver = [
@@ -114,11 +113,9 @@ gateway = [
 internals = ["dep:byteorder"]
 native = [
     "reqwest?/native-tls",
-    "serenity?/native_tls_backend",
     "stream_lib?/native-tls",
     "tokio-tungstenite?/native-tls",
     "tokio-websockets?/native-tls",
-    "twilight-gateway?/native-tls",
 ]
 receive = [
     "dep:bytes",
@@ -128,18 +125,15 @@ receive = [
 ]
 rustls = [
     "reqwest?/rustls-tls",
-    "serenity?/rustls_backend",
     "stream_lib?/rustls-tls",
     "tokio-tungstenite?/rustls-tls-webpki-roots",
     "tokio-websockets?/ring",
     "tokio-websockets?/rustls-native-roots",
-    "twilight-gateway?/rustls-native-roots",
 ]
 tungstenite = ["dep:tokio-tungstenite"]
-twilight = [
-    "dep:twilight-gateway",
-    "dep:twilight-model",
-]
+# Retain cfg names for upstream source; these integrations are not shipped.
+serenity = []
+twilight = []
 tws = ["dep:tokio-websockets"]
 
 [lib]
@@ -261,15 +255,6 @@ optional = true
 [dependencies.serde_json]
 version = "1"
 
-[dependencies.serenity]
-version = "0.12.0"
-features = [
-    "voice",
-    "gateway",
-]
-optional = true
-default-features = false
-
 [dependencies.serenity-voice-model]
 version = "0.3"
 optional = true
@@ -327,16 +312,6 @@ features = ["log"]
 
 [dependencies.tracing-futures]
 version = "0.2"
-
-[dependencies.twilight-gateway]
-version = ">= 0.16.0, <= 0.17"
-optional = true
-default-features = false
-
-[dependencies.twilight-model]
-version = ">= 0.16.0, <= 0.17"
-optional = true
-default-features = false
 
 [dependencies.typenum]
 version = "1.17.0"

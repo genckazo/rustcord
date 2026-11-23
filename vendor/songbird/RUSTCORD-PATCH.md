@@ -11,3 +11,8 @@ This keeps all Songbird Gateway/Serenity/Twilight integrations disabled.
 
 The `ringbuf` requirement is raised from 0.4 to 0.5.2 (API-compatible for the
 async byte adapter) to fix RUSTSEC-2026-0293 rather than suppress it.
+
+Unused optional Serenity and Twilight dependencies and their TLS feature links
+are removed so their obsolete TLS stacks are not retained in Cargo.lock.
+Their empty feature names remain only for upstream cfg checking; this fork
+supports Rustcord's driver-only feature selection, not those integrations.
