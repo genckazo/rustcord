@@ -778,7 +778,11 @@ fn results(s: &State, search: &Search) -> El {
                                 .font(type_::BODY)
                                 .color(t.text_secondary),
                         )
-                        .child(text(&m.timestamp).font(type_::BODY).color(t.text_secondary)),
+                        .child(
+                            text(time::format_timestamp(&m.timestamp))
+                                .font(type_::BODY)
+                                .color(t.text_secondary),
+                        ),
                 )
                 .child(label(&m.content).wrap_anywhere().w_full()),
         );
