@@ -1,5 +1,5 @@
-use crate::model::{Channel, Guild, Message, User, VoiceState};
-use std::collections::{HashMap, VecDeque};
+use crate::model::{Channel, Emoji, Guild, Message, Reaction, User, VoiceState};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub const MESSAGE_CAP: usize = 500;
 pub const HISTORY_LIMIT: usize = 50;
@@ -29,6 +29,8 @@ pub struct Store {
     pub messages: HashMap<String, VecDeque<Message>>,
     pub windows: HashMap<String, Window>,
     pub voice_states: HashMap<(Option<String>, String), VoiceState>,
+    pub unread_channels: HashSet<String>,
+    pub mention_counts: HashMap<String, u32>,
     /// LRU order of `messages` keys, least recent first.
     recency: VecDeque<String>,
     /// Selected channel, exempt from eviction.
@@ -269,12 +271,129 @@ impl Store {
         }
         evicted
     }
+    pub fn mark_unread(&mut self, channel: &str, mentioned: bool) {
+        self.unread_channels.insert(channel.to_owned());
+        if mentioned {
+            let count = self.mention_counts.entry(channel.to_owned()).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+    }
+    pub fn mark_read(&mut self, channel: &str) {
+        self.unread_channels.remove(channel);
+        self.mention_counts.remove(channel);
+    }
+    pub fn is_unread(&self, channel: &str) -> bool {
+        self.unread_channels.contains(channel)
+    }
+    pub fn mentions(&self, channel: &str) -> u32 {
+        self.mention_counts.get(channel).copied().unwrap_or(0)
+    }
+    pub fn guild_has_unread(&self, guild_id: &str) -> bool {
+        self.channels.values().any(|c| {
+            c.guild_id.as_deref() == Some(guild_id) && self.unread_channels.contains(&c.id)
+        })
+    }
+    pub fn guild_mentions(&self, guild_id: &str) -> u32 {
+        self.channels
+            .values()
+            .filter(|c| c.guild_id.as_deref() == Some(guild_id))
+            .map(|c| self.mentions(&c.id))
+            .fold(0u32, u32::saturating_add)
+    }
+    pub fn dms_have_unread(&self) -> bool {
+        self.channels
+            .values()
+            .any(|c| c.guild_id.is_none() && self.unread_channels.contains(&c.id))
+    }
+    pub fn dms_mentions(&self) -> u32 {
+        self.channels
+            .values()
+            .filter(|c| c.guild_id.is_none())
+            .map(|c| self.mentions(&c.id))
+            .fold(0u32, u32::saturating_add)
+    }
+    pub fn update_message(&mut self, message: Message) {
+        if let Some(existing) = self
+            .messages
+            .get_mut(&message.channel_id)
+            .and_then(|ms| ms.iter_mut().find(|m| m.id == message.id))
+        {
+            *existing = message;
+        }
+    }
+    pub fn delete_message(&mut self, channel: &str, message_id: &str) {
+        if let Some(ms) = self.messages.get_mut(channel) {
+            ms.retain(|m| m.id != message_id);
+        }
+    }
+    pub fn apply_reaction(
+        &mut self,
+        channel: &str,
+        message_id: &str,
+        emoji: Emoji,
+        add: bool,
+        is_me: bool,
+    ) {
+        let Some(message) = self
+            .messages
+            .get_mut(channel)
+            .and_then(|ms| ms.iter_mut().find(|m| m.id == message_id))
+        else {
+            return;
+        };
+        if add {
+            if let Some(reaction) = message
+                .reactions
+                .iter_mut()
+                .find(|r| r.emoji.same_as(&emoji))
+            {
+                if !(is_me && reaction.me) {
+                    reaction.count = reaction.count.saturating_add(1);
+                }
+                if is_me {
+                    reaction.me = true;
+                }
+            } else {
+                message.reactions.push(Reaction {
+                    count: 1,
+                    me: is_me,
+                    emoji,
+                });
+            }
+        } else if let Some(index) = message
+            .reactions
+            .iter()
+            .position(|r| r.emoji.same_as(&emoji))
+        {
+            let reaction = &mut message.reactions[index];
+            if !(is_me && !reaction.me) {
+                reaction.count = reaction.count.saturating_sub(1);
+            }
+            if is_me {
+                reaction.me = false;
+            }
+            if reaction.count == 0 {
+                message.reactions.remove(index);
+            }
+        }
+    }
+    pub fn clear_reactions(&mut self, channel: &str, message_id: &str) {
+        if let Some(message) = self
+            .messages
+            .get_mut(channel)
+            .and_then(|ms| ms.iter_mut().find(|m| m.id == message_id))
+        {
+            message.reactions.clear();
+        }
+    }
     pub fn remove_channel(&mut self, id: &str) {
         self.typing.remove_channel(id);
         self.channels.remove(id);
         self.messages.remove(id);
         self.windows.remove(id);
         self.latest_since.remove(id);
+        self.unread_channels.remove(id);
+        self.mention_counts.remove(id);
         self.voice_states
             .retain(|_, state| state.channel_id.as_deref() != Some(id));
         if let Some(index) = self.recency.iter().position(|c| c == id) {
@@ -316,6 +435,9 @@ mod tests {
             author: User::default(),
             content: "hello".into(),
             timestamp: "now".into(),
+            edited_timestamp: None,
+            referenced_message: None,
+            reactions: Vec::new(),
             embeds: Vec::new(),
             attachments: Vec::new(),
         }
@@ -341,6 +463,9 @@ mod tests {
             author: User::default(),
             content: "x".into(),
             timestamp: "now".into(),
+            edited_timestamp: None,
+            referenced_message: None,
+            reactions: Vec::new(),
             embeds: Vec::new(),
             attachments: Vec::new(),
         }
@@ -418,6 +543,9 @@ mod tests {
                     },
                     content: content.clone(),
                     timestamp: "2026-11-23T10:00:00Z".into(),
+                    edited_timestamp: None,
+                    referenced_message: None,
+                    reactions: vec![],
                     embeds: vec![],
                     attachments: vec![],
                 });
@@ -545,5 +673,45 @@ mod tests {
         store.activity(&message(100));
         store.activity(&message(9));
         assert_eq!(store.channels["1"].last_message_id.as_deref(), Some("100"));
+    }
+    #[test]
+    fn reactions_and_unread_tracking() {
+        let mut store = Store::default();
+        store.insert(message(1));
+        let thumbs = Emoji::unicode("👍");
+        store.apply_reaction("1", "1", thumbs.clone(), true, true);
+        // Repeating own reaction is idempotent.
+        store.apply_reaction("1", "1", thumbs.clone(), true, true);
+        assert_eq!(store.messages["1"][0].reactions.len(), 1);
+        assert_eq!(store.messages["1"][0].reactions[0].count, 1);
+        assert!(store.messages["1"][0].reactions[0].me);
+
+        // Another user adds the same reaction.
+        store.apply_reaction("1", "1", thumbs.clone(), true, false);
+        assert_eq!(store.messages["1"][0].reactions[0].count, 2);
+
+        // Removing own reaction decrements and clears `me`, keeping the other user's count.
+        store.apply_reaction("1", "1", thumbs.clone(), false, true);
+        assert_eq!(store.messages["1"][0].reactions[0].count, 1);
+        assert!(!store.messages["1"][0].reactions[0].me);
+
+        // Removing last reaction removes the pill.
+        store.apply_reaction("1", "1", thumbs, false, false);
+        assert!(store.messages["1"][0].reactions.is_empty());
+
+        let c: Channel =
+            serde_json::from_value(serde_json::json!({"id":"10","type":0,"guild_id":"5"})).unwrap();
+        store.channels.insert("10".into(), c);
+        store.mark_unread("10", false);
+        assert!(store.is_unread("10"));
+        assert!(store.guild_has_unread("5"));
+        assert_eq!(store.guild_mentions("5"), 0);
+        store.mark_unread("10", true);
+        assert_eq!(store.mentions("10"), 1);
+        assert_eq!(store.guild_mentions("5"), 1);
+        store.mark_read("10");
+        assert!(!store.is_unread("10"));
+        assert!(!store.guild_has_unread("5"));
+        assert_eq!(store.guild_mentions("5"), 0);
     }
 }

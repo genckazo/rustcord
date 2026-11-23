@@ -1,7 +1,7 @@
 use crate::{
     api::Api,
     gateway,
-    model::{Channel, Message},
+    model::{Channel, Emoji, Message},
     search::Query,
     store::{Direction, HISTORY_LIMIT},
 };
@@ -20,6 +20,22 @@ pub enum Command {
     Send {
         channel: String,
         content: String,
+        reply_to: Option<String>,
+    },
+    Edit {
+        channel: String,
+        message_id: String,
+        content: String,
+    },
+    Delete {
+        channel: String,
+        message_id: String,
+    },
+    React {
+        channel: String,
+        message_id: String,
+        emoji: Emoji,
+        add: bool,
     },
     Channels(String),
     OpenDm(String),
@@ -34,6 +50,19 @@ pub enum Event {
     Dispatch(String, Value),
     History(String, Direction, Result<Vec<Message>, String>),
     Sent(Result<Message, String>),
+    Edited(Result<Message, String>),
+    Deleted {
+        channel: String,
+        message_id: String,
+        result: Result<(), String>,
+    },
+    Reacted {
+        channel: String,
+        message_id: String,
+        emoji: Emoji,
+        add: bool,
+        result: Result<(), String>,
+    },
     Channels(Result<Vec<Channel>, String>),
     Voice(crate::voice::Snapshot),
     OpenedDm(Result<Channel, String>),
@@ -141,8 +170,45 @@ impl Network {
                                     .await;
                                 Event::History(channel, direction, result)
                             }
-                            Command::Send { channel, content } => {
-                                Event::Sent(api.send(&channel, &content).await)
+                            Command::Send {
+                                channel,
+                                content,
+                                reply_to,
+                            } => {
+                                Event::Sent(api.send(&channel, &content, reply_to.as_deref()).await)
+                            }
+                            Command::Edit {
+                                channel,
+                                message_id,
+                                content,
+                            } => Event::Edited(
+                                api.edit_message(&channel, &message_id, &content).await,
+                            ),
+                            Command::Delete {
+                                channel,
+                                message_id,
+                            } => {
+                                let result = api.delete_message(&channel, &message_id).await;
+                                Event::Deleted {
+                                    channel,
+                                    message_id,
+                                    result,
+                                }
+                            }
+                            Command::React {
+                                channel,
+                                message_id,
+                                emoji,
+                                add,
+                            } => {
+                                let result = api.react(&channel, &message_id, &emoji, add).await;
+                                Event::Reacted {
+                                    channel,
+                                    message_id,
+                                    emoji,
+                                    add,
+                                    result,
+                                }
                             }
                             Command::Search { query, offset } => {
                                 let result = api.search(&query, offset).await;

@@ -67,6 +67,21 @@ pub struct State {
     search_error: Option<String>,
     scrolled_up: Rc<Cell<bool>>,
     scrolled_up_changed: Rc<Cell<bool>>,
+    replying_to: Option<ReplyTarget>,
+    editing: Option<EditTarget>,
+}
+#[derive(Clone, Debug)]
+pub(super) struct ReplyTarget {
+    pub(super) channel: String,
+    pub(super) message_id: String,
+    pub(super) author: String,
+    pub(super) snippet: String,
+}
+#[derive(Clone, Debug)]
+pub(super) struct EditTarget {
+    pub(super) channel: String,
+    pub(super) message_id: String,
+    pub(super) previous_draft: String,
 }
 impl Default for State {
     fn default() -> Self {
@@ -96,6 +111,8 @@ impl Default for State {
             search_error: None,
             scrolled_up: Rc::new(Cell::new(false)),
             scrolled_up_changed: Rc::new(Cell::new(false)),
+            replying_to: None,
+            editing: None,
         }
     }
 }
@@ -259,10 +276,96 @@ impl State {
         self.search = None;
         self.search_error = None;
     }
+    pub(super) fn clear_message_targets(&mut self, channel: &str, message_id: &str) {
+        if self
+            .replying_to
+            .as_ref()
+            .is_some_and(|r| r.channel == channel && r.message_id == message_id)
+        {
+            self.replying_to = None;
+        }
+        if self
+            .editing
+            .as_ref()
+            .is_some_and(|e| e.channel == channel && e.message_id == message_id)
+        {
+            if let Some(prev) = self.editing.take().map(|e| e.previous_draft) {
+                self.draft.replace_text(prev);
+            }
+        }
+    }
+    fn start_reply(&mut self, message: &Message) {
+        if let Some(edit) = self.editing.take() {
+            self.draft.replace_text(edit.previous_draft);
+        }
+        self.replying_to = Some(ReplyTarget {
+            channel: message.channel_id.clone(),
+            message_id: message.id.clone(),
+            author: message.author.name().to_owned(),
+            snippet: preview_snippet(&message.content),
+        });
+    }
+    fn start_edit(&mut self, message: &Message) {
+        self.replying_to = None;
+        let previous_draft = self
+            .editing
+            .take()
+            .map(|e| e.previous_draft)
+            .unwrap_or_else(|| self.draft.text.clone());
+        self.editing = Some(EditTarget {
+            channel: message.channel_id.clone(),
+            message_id: message.id.clone(),
+            previous_draft,
+        });
+        self.draft.replace_text(message.content.clone());
+    }
+    fn cancel_composer_mode(&mut self) {
+        self.replying_to = None;
+        if let Some(edit) = self.editing.take() {
+            self.draft.replace_text(edit.previous_draft);
+        }
+    }
+    fn delete_message(&mut self, channel: String, message_id: String) {
+        if self.demo {
+            self.store.delete_message(&channel, &message_id);
+            self.clear_message_targets(&channel, &message_id);
+            return;
+        }
+        self.command(Command::Delete {
+            channel,
+            message_id,
+        });
+    }
+    fn toggle_reaction(&mut self, channel: String, message_id: String, emoji: crate::model::Emoji) {
+        let already_reacted = self
+            .store
+            .messages
+            .get(&channel)
+            .and_then(|ms| ms.iter().find(|m| m.id == message_id))
+            .is_some_and(|m| m.reactions.iter().any(|r| r.me && r.emoji.same_as(&emoji)));
+        let add = !already_reacted;
+        if self.demo {
+            self.store
+                .apply_reaction(&channel, &message_id, emoji, add, true);
+            return;
+        }
+        self.command(Command::React {
+            channel,
+            message_id,
+            emoji,
+            add,
+        });
+    }
     fn escape_key(&mut self, key: &Key) -> bool {
-        if *key == Key::Escape && self.search.is_some() {
-            self.close_search();
-            return true;
+        if *key == Key::Escape {
+            if self.search.is_some() {
+                self.close_search();
+                return true;
+            }
+            if self.editing.is_some() || self.replying_to.is_some() {
+                self.cancel_composer_mode();
+                return true;
+            }
         }
         false
     }
@@ -274,6 +377,9 @@ impl State {
         self.scroll_top.set(false);
         self.scroll_bottom.set(false);
         self.scrolled_up.set(false);
+        if self.channel.as_ref() != Some(&channel) {
+            self.cancel_composer_mode();
+        }
         if self.guild.is_none() && self.channel.as_ref() != Some(&channel) {
             self.reset_search();
         } else {
@@ -287,6 +393,7 @@ impl State {
             }
         }
         self.channel = Some(channel.clone());
+        self.store.mark_read(&channel);
         self.store.pin(Some(channel.clone()));
         if let Some(saved) = self.drafts.get(&channel) {
             self.draft.replace_text(saved.clone());
@@ -352,6 +459,8 @@ fn logout(s: &mut State, _: &mut Tx) {
     s.sidebar_limit = SIDEBAR_PAGE;
     s.sending = false;
     s.demo = false;
+    s.replying_to = None;
+    s.editing = None;
     s.reset_search();
     s.status = "Offline".into();
     s.voice = crate::voice::Snapshot::default();
@@ -387,6 +496,29 @@ fn start_search(s: &mut State) {
         }
     }
 }
+fn preview_snippet(content: &str) -> String {
+    let single_line: String = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = single_line.trim();
+    if trimmed.is_empty() {
+        return "[attachment or embed]".into();
+    }
+    let mut chars = trimmed.chars();
+    let short: String = chars.by_ref().take(64).collect();
+    if chars.next().is_some() {
+        format!("{short}…")
+    } else {
+        short
+    }
+}
+fn unread_suffix(unread: bool, mentions: u32) -> String {
+    if mentions > 0 {
+        format!(" ({mentions})")
+    } else if unread {
+        " ●".into()
+    } else {
+        String::new()
+    }
+}
 fn send(s: &mut State, tx: &mut Tx) {
     if s.sending || s.draft.text.trim().is_empty() {
         return;
@@ -395,7 +527,24 @@ fn send(s: &mut State, tx: &mut Tx) {
         s.error = "Messages must be 2,000 characters or fewer.".into();
         return;
     }
+    if let Some(edit) = s.editing.clone() {
+        if s.demo {
+            demo_actions::edit(s, edit.channel, edit.message_id);
+            return;
+        }
+        s.sending = s.command(Command::Edit {
+            channel: edit.channel,
+            message_id: edit.message_id,
+            content: s.draft.text.clone(),
+        });
+        return;
+    }
     if let Some(channel) = s.channel.clone() {
+        let reply_to = s
+            .replying_to
+            .as_ref()
+            .filter(|r| r.channel == channel)
+            .map(|r| r.message_id.clone());
         if s.demo {
             demo_actions::send(s, channel);
             tx.scroll_to_bottom("transcript");
@@ -404,6 +553,7 @@ fn send(s: &mut State, tx: &mut Tx) {
         s.sending = s.command(Command::Send {
             channel,
             content: s.draft.text.clone(),
+            reply_to,
         });
     }
 }
@@ -481,8 +631,41 @@ fn login(s: &State) -> El {
             .child(text("Third-party user-token clients violate Discord’s terms. Your account may be restricted or terminated.").font(type_::BODY).color(t.text_secondary).wrap().w_full()))
         .child(text("No telemetry · No message or audio files · Links open in your browser").font(type_::BODY).color(t.text_secondary).wrap().w_full().align(Align::Center))
 }
+fn pill_button(
+    key: impl Into<String>,
+    value: impl Into<String>,
+    active: bool,
+    action: impl Fn(&mut State, &mut Tx) + 'static,
+) -> El {
+    let t = tok::theme(true);
+    el().key(key.into())
+        .role("button")
+        .focusable(true)
+        .px(8.0)
+        .py(3.0)
+        .radius(6.0)
+        .fill(if active { t.hover } else { t.card })
+        .border(
+            1.0,
+            if active {
+                tok::accent(0, true)
+            } else {
+                t.card_border
+            },
+        )
+        .on_press_tx(action)
+        .child(
+            text(value.into())
+                .font(rune::TextStyle::new(12.0, 500.0))
+                .color(if active { t.text } else { t.text_secondary }),
+        )
+}
 fn chat(s: &State) -> El {
     let t = tok::theme(true);
+    let dms_label = format!(
+        "Direct messages{}",
+        unread_suffix(s.store.dms_have_unread(), s.store.dms_mentions())
+    );
     let mut servers = col()
         .w(185.0)
         .h_full()
@@ -490,31 +673,33 @@ fn chat(s: &State) -> El {
         .gap(10.0)
         .fill(t.bg)
         .child(text("Rustcord").font(type_::TITLE).color(t.text))
-        .child(button(
-            "dms",
-            "Direct messages",
-            s.guild.is_none(),
-            |s, _| {
-                s.guild = None;
-                s.channel = None;
-                s.sidebar_limit = SIDEBAR_PAGE;
-                s.reset_search();
-                s.store.pin(None);
-            },
-        ));
+        .child(button("dms", dms_label, s.guild.is_none(), |s, _| {
+            s.guild = None;
+            s.channel = None;
+            s.sidebar_limit = SIDEBAR_PAGE;
+            s.cancel_composer_mode();
+            s.reset_search();
+            s.store.pin(None);
+        }));
     let mut guilds: Vec<_> = s.store.guilds.values().collect();
     guilds.sort_by(|a, b| a.name.cmp(&b.name));
     let mut list = col().gap(6.0).w_full();
     for guild in guilds {
         let id = guild.id.clone();
+        let guild_label = format!(
+            "{}{}",
+            guild.name,
+            unread_suffix(s.store.guild_has_unread(&id), s.store.guild_mentions(&id))
+        );
         list = list.child(button(
             format!("guild-{id}"),
-            &guild.name,
+            guild_label,
             s.guild.as_ref() == Some(&id),
             move |s, _| {
                 s.guild = Some(id.clone());
                 s.channel = None;
                 s.sidebar_limit = SIDEBAR_PAGE;
+                s.cancel_composer_mode();
                 s.reset_search();
                 s.store.pin(None);
                 if s.store.channels_for(Some(&id)).is_empty() {
@@ -545,7 +730,7 @@ fn chat(s: &State) -> El {
                 voice_panel::speaker_label(c.label())
             } else {
                 label(format!(
-                    "{} {}",
+                    "{} {}{}",
                     if c.guild_id.is_none() {
                         if c.kind == 3 {
                             "◆"
@@ -555,7 +740,8 @@ fn chat(s: &State) -> El {
                     } else {
                         "#"
                     },
-                    s.store.channel_label(c)
+                    s.store.channel_label(c),
+                    unread_suffix(s.store.is_unread(&id), s.store.mentions(&id))
                 ))
             },
             s.channel.as_ref() == Some(&id)
@@ -699,30 +885,82 @@ fn chat(s: &State) -> El {
         if let Some(items) = s.store.messages.get(channel) {
             for m in items {
                 let author = m.author.clone();
-                let mut item = col()
-                    .key(format!("message-{}", m.id))
-                    .w_full()
-                    .gap(6.0)
-                    .child(
-                        row()
-                            .gap(12.0)
-                            .child(
-                                text(m.author.name())
-                                    .font(type_::LABEL)
-                                    .color(tok::accent(0, true))
-                                    .key(format!("author-{}", m.id))
-                                    .role("button")
-                                    .focusable(true)
-                                    .on_press_tx(move |s: &mut State, tx| {
-                                        s.open_dm(author.clone(), tx)
-                                    }),
-                            )
-                            .child(
-                                text(time::format_timestamp(&m.timestamp))
-                                    .font(type_::BODY)
-                                    .color(t.text_secondary),
-                            ),
+                let is_mine = s.store.user.as_ref().is_some_and(|me| me.id == m.author.id);
+                let mut item = col().key(format!("message-{}", m.id)).w_full().gap(6.0);
+                if let Some(ref referenced) = m.referenced_message {
+                    item = item.child(
+                        text(format!(
+                            "↩ {}: {}",
+                            referenced.author.name(),
+                            preview_snippet(&referenced.content)
+                        ))
+                        .font(rune::TextStyle::new(12.0, 400.0))
+                        .color(t.text_secondary)
+                        .pl(10.0)
+                        .wrap()
+                        .w_full(),
                     );
+                }
+                let mut header_row = row()
+                    .gap(10.0)
+                    .center_y()
+                    .child(
+                        text(m.author.name())
+                            .font(type_::LABEL)
+                            .color(tok::accent(0, true))
+                            .key(format!("author-{}", m.id))
+                            .role("button")
+                            .focusable(true)
+                            .on_press_tx(move |s: &mut State, tx| s.open_dm(author.clone(), tx)),
+                    )
+                    .child(
+                        text(if m.edited_timestamp.is_some() {
+                            format!("{} (edited)", time::format_timestamp(&m.timestamp))
+                        } else {
+                            time::format_timestamp(&m.timestamp)
+                        })
+                        .font(type_::BODY)
+                        .color(t.text_secondary),
+                    );
+                let msg_for_reply = m.clone();
+                header_row = header_row.child(pill_button(
+                    format!("reply-{}", m.id),
+                    "Reply",
+                    s.replying_to.as_ref().is_some_and(|r| r.message_id == m.id),
+                    move |s, _| s.start_reply(&msg_for_reply),
+                ));
+                let ch_react = m.channel_id.clone();
+                let id_react = m.id.clone();
+                header_row = header_row.child(pill_button(
+                    format!("quick-react-{}", m.id),
+                    "+1",
+                    false,
+                    move |s, _| {
+                        s.toggle_reaction(
+                            ch_react.clone(),
+                            id_react.clone(),
+                            crate::model::Emoji::unicode("👍"),
+                        )
+                    },
+                ));
+                if is_mine {
+                    let msg_for_edit = m.clone();
+                    header_row = header_row.child(pill_button(
+                        format!("edit-{}", m.id),
+                        "Edit",
+                        s.editing.as_ref().is_some_and(|e| e.message_id == m.id),
+                        move |s, _| s.start_edit(&msg_for_edit),
+                    ));
+                    let ch_del = m.channel_id.clone();
+                    let id_del = m.id.clone();
+                    header_row = header_row.child(pill_button(
+                        format!("delete-{}", m.id),
+                        "Delete",
+                        false,
+                        move |s, _| s.delete_message(ch_del.clone(), id_del.clone()),
+                    ));
+                }
+                item = item.child(header_row);
                 if !m.content.is_empty() {
                     item = item.child(label(&m.content).wrap_anywhere().w_full());
                 }
@@ -731,6 +969,23 @@ fn chat(s: &State) -> El {
                 }
                 for attachment in &m.attachments {
                     item = item.child(message_media::attachment_card(attachment));
+                }
+                if !m.reactions.is_empty() {
+                    let mut react_row = row().gap(6.0);
+                    for (idx, r) in m.reactions.iter().enumerate() {
+                        let ch_r = m.channel_id.clone();
+                        let id_r = m.id.clone();
+                        let emoji = r.emoji.clone();
+                        react_row = react_row.child(pill_button(
+                            format!("reaction-{}-{idx}", m.id),
+                            format!("{} {}", r.emoji.label(), r.count),
+                            r.me,
+                            move |s, _| {
+                                s.toggle_reaction(ch_r.clone(), id_r.clone(), emoji.clone())
+                            },
+                        ));
+                    }
+                    item = item.child(react_row);
                 }
                 messages = messages.child(item);
             }
@@ -791,6 +1046,53 @@ fn chat(s: &State) -> El {
         if !typing.is_empty() {
             main = main.child(text(typing).font(type_::BODY).color(t.text_secondary));
         }
+        if let Some(ref edit) = s.editing {
+            if edit.channel == *channel {
+                main = main.child(
+                    row()
+                        .w_full()
+                        .gap(10.0)
+                        .px(12.0)
+                        .py(6.0)
+                        .radius(7.0)
+                        .fill(t.card)
+                        .border(1.0, tok::accent(0, true))
+                        .center_y()
+                        .child(
+                            text("Editing message (Esc to cancel)")
+                                .font(type_::BODY)
+                                .color(t.text_secondary)
+                                .grow(1.0),
+                        )
+                        .child(pill_button("cancel-edit", "Cancel", false, |s, _| {
+                            s.cancel_composer_mode()
+                        })),
+                );
+            }
+        } else if let Some(ref reply) = s.replying_to {
+            if reply.channel == *channel {
+                main = main.child(
+                    row()
+                        .w_full()
+                        .gap(10.0)
+                        .px(12.0)
+                        .py(6.0)
+                        .radius(7.0)
+                        .fill(t.card)
+                        .border(1.0, t.card_border)
+                        .center_y()
+                        .child(
+                            text(format!("Replying to {}: {}", reply.author, reply.snippet))
+                                .font(type_::BODY)
+                                .color(t.text_secondary)
+                                .grow(1.0),
+                        )
+                        .child(pill_button("cancel-reply", "Cancel", false, |s, _| {
+                            s.cancel_composer_mode()
+                        })),
+                );
+            }
+        }
         main = main.child(
             row()
                 .gap(8.0)
@@ -806,7 +1108,14 @@ fn chat(s: &State) -> El {
                         .radius(8.0)
                         .fill(t.card)
                         .color(t.text)
-                        .placeholder("Write a message…", t.text_secondary)
+                        .placeholder(
+                            if s.editing.is_some() {
+                                "Edit message…"
+                            } else {
+                                "Write a message…"
+                            },
+                            t.text_secondary,
+                        )
                         .on_edit(|s: &mut State| &mut s.draft)
                         .on_input_change(send_typing)
                         .on_input_key(|s: &mut State, ev: &KeyEvent, _: &mut Tx| {
@@ -816,7 +1125,13 @@ fn chat(s: &State) -> El {
                 )
                 .child(el().w(90.0).child(button(
                     "send",
-                    if s.sending { "Sending…" } else { "Send" },
+                    if s.sending {
+                        "Sending…"
+                    } else if s.editing.is_some() {
+                        "Save"
+                    } else {
+                        "Send"
+                    },
                     true,
                     send,
                 ))),
@@ -1110,12 +1425,40 @@ fn demo(s: &mut State) {
             },
             content: content.into(),
             timestamp,
+            edited_timestamp: (i == 3).then(|| now.to_string()),
+            referenced_message: (i == 3).then(|| {
+                Box::new(crate::model::ReferencedMessage {
+                    author: User {
+                        id: "3".into(),
+                        username: "River".into(),
+                        global_name: None,
+                    },
+                    content: "Text chat is here. Messages stay in memory, not on disk.".into(),
+                })
+            }),
+            reactions: if i == 1 {
+                vec![
+                    crate::model::Reaction {
+                        count: 2,
+                        me: true,
+                        emoji: crate::model::Emoji::unicode("👍"),
+                    },
+                    crate::model::Reaction {
+                        count: 1,
+                        me: false,
+                        emoji: crate::model::Emoji::unicode("🔥"),
+                    },
+                ]
+            } else {
+                Vec::new()
+            },
             embeds: Vec::new(),
             attachments: Vec::new(),
         });
     }
+    s.store.mark_unread("103", false);
     let media: Message = serde_json::from_value(serde_json::json!({
-        "id":"4","channel_id":"102","author":{"id":"1","username":"Ada"},
+        "id":"4","channel_id":"102","author":{"id":"2","username":"Ada"},
         "timestamp":"2026-11-23T10:04:00Z",
         "embeds":[{
             "title":"The Rust Book","description":"A guide to learning Rust.",
@@ -1201,6 +1544,9 @@ mod tests {
                 author: User::default(),
                 content: "sent".into(),
                 timestamp: "now".into(),
+                edited_timestamp: None,
+                referenced_message: None,
+                reactions: Vec::new(),
                 embeds: Vec::new(),
                 attachments: Vec::new(),
             };
@@ -1370,5 +1716,50 @@ mod tests {
         assert_eq!(normalize_token("\"abc.def.ghi\""), "abc.def.ghi");
         assert_eq!(normalize_token(" 'abc.def.ghi' "), "abc.def.ghi");
         assert_eq!(normalize_token("  \"\"  "), "");
+    }
+
+    #[test]
+    fn demo_reply_edit_delete_and_escape_restore_draft() {
+        let mut s = State::default();
+        demo(&mut s);
+        let original = s.store.messages["102"][2].clone();
+        s.draft.replace_text("unsent draft");
+
+        // Starting edit saves the previous draft; Escape restores it.
+        s.start_edit(&original);
+        assert_eq!(s.draft.text, original.content);
+        assert!(s.escape_key(&Key::Escape));
+        assert!(s.editing.is_none());
+        assert_eq!(s.draft.text, "unsent draft");
+
+        // Replying and editing in demo mode update the transcript cleanly.
+        s.start_reply(&s.store.messages["102"][0].clone());
+        assert!(s.replying_to.is_some());
+        demo_actions::send(&mut s, "102".into());
+        assert!(s.replying_to.is_none());
+        let sent = s.store.messages["102"].back().unwrap().clone();
+        assert_eq!(
+            sent.referenced_message.as_ref().map(|r| r.author.name()),
+            Some("Ada")
+        );
+
+        s.start_edit(&sent);
+        s.draft.replace_text("updated content");
+        demo_actions::edit(&mut s, "102".into(), sent.id.clone());
+        assert!(s.editing.is_none());
+        let edited = s.store.messages["102"].back().unwrap();
+        assert_eq!(edited.content, "updated content");
+        assert!(edited.edited_timestamp.is_some());
+
+        // Toggle reaction adds then removes in demo mode.
+        let emoji = crate::model::Emoji::unicode("👍");
+        s.toggle_reaction("102".into(), sent.id.clone(), emoji.clone());
+        assert_eq!(s.store.messages["102"].back().unwrap().reactions.len(), 1);
+        s.toggle_reaction("102".into(), sent.id.clone(), emoji);
+        assert!(s.store.messages["102"].back().unwrap().reactions.is_empty());
+
+        // Delete removes the message from demo store.
+        s.delete_message("102".into(), sent.id.clone());
+        assert!(!s.store.messages["102"].iter().any(|m| m.id == sent.id));
     }
 }

@@ -111,8 +111,13 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
         }
         "MESSAGE_CREATE" => {
             if let Ok(m) = Message::deserialize(&data) {
-                if let Some(kind) = notifications::for_message(&s.store, &m, &data) {
+                let notify = notifications::for_message(&s.store, &m, &data);
+                if let Some(kind) = notify {
                     notifications::post(kind);
+                }
+                let is_self = s.store.user.as_ref().is_some_and(|me| me.id == m.author.id);
+                if !is_self && s.channel.as_deref() != Some(m.channel_id.as_str()) {
+                    s.store.mark_unread(&m.channel_id, notify.is_some());
                 }
                 s.store.activity(&m);
                 s.store.typing.clear(&m.channel_id, &m.author.id);
@@ -149,6 +154,9 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
                     if let Some(content) = data["content"].as_str() {
                         m.content = content.into();
                     }
+                    if let Some(edited) = data["edited_timestamp"].as_str() {
+                        m.edited_timestamp = Some(edited.into());
+                    }
                     // Missing fields on a partial update leave cached media unchanged.
                     if let Ok(embeds) = serde_json::from_value(data["embeds"].clone()) {
                         m.embeds = embeds;
@@ -161,9 +169,33 @@ fn dispatch(s: &mut State, name: &str, data: Value) {
         }
         "MESSAGE_DELETE" => {
             if let (Some(channel), Some(id)) = (data["channel_id"].as_str(), data["id"].as_str()) {
-                if let Some(ms) = s.store.messages.get_mut(channel) {
-                    ms.retain(|m| m.id != id);
-                }
+                s.store.delete_message(channel, id);
+                s.clear_message_targets(channel, id);
+            }
+        }
+        "MESSAGE_REACTION_ADD" | "MESSAGE_REACTION_REMOVE" => {
+            if let (Some(channel), Some(message_id), Ok(emoji)) = (
+                data["channel_id"].as_str(),
+                data["message_id"].as_str(),
+                serde_json::from_value::<crate::model::Emoji>(data["emoji"].clone()),
+            ) {
+                let is_me = data["user_id"]
+                    .as_str()
+                    .is_some_and(|uid| s.store.user.as_ref().is_some_and(|me| me.id == uid));
+                s.store.apply_reaction(
+                    channel,
+                    message_id,
+                    emoji,
+                    name == "MESSAGE_REACTION_ADD",
+                    is_me,
+                );
+            }
+        }
+        "MESSAGE_REACTION_REMOVE_ALL" => {
+            if let (Some(channel), Some(message_id)) =
+                (data["channel_id"].as_str(), data["message_id"].as_str())
+            {
+                s.store.clear_reactions(channel, message_id);
             }
         }
         _ => {}
@@ -223,6 +255,7 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
                 s.sending = false;
                 match result {
                     Ok(m) => {
+                        s.replying_to = None;
                         s.store.activity(&m);
                         s.store.typing.reset(&m.channel_id);
                         s.drafts.remove(&m.channel_id);
@@ -233,6 +266,44 @@ pub(super) fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
                     Err(error) => s.error = error,
                 }
             }
+            Event::Edited(result) => {
+                s.sending = false;
+                match result {
+                    Ok(m) => {
+                        s.editing = None;
+                        s.draft.clear();
+                        s.error.clear();
+                        s.store.update_message(m);
+                    }
+                    Err(error) => s.error = error,
+                }
+            }
+            Event::Deleted {
+                channel,
+                message_id,
+                result,
+            } => match result {
+                Ok(()) => {
+                    s.store.delete_message(&channel, &message_id);
+                    s.clear_message_targets(&channel, &message_id);
+                    s.error.clear();
+                }
+                Err(error) => s.error = error,
+            },
+            Event::Reacted {
+                channel,
+                message_id,
+                emoji,
+                add,
+                result,
+            } => match result {
+                Ok(()) => {
+                    s.store
+                        .apply_reaction(&channel, &message_id, emoji, add, true);
+                    s.error.clear();
+                }
+                Err(error) => s.error = error,
+            },
             Event::Search {
                 query,
                 offset,

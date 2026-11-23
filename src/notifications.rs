@@ -88,6 +88,9 @@ mod tests {
             },
             content: "<@me>".into(),
             timestamp: "2026-01-01T00:00:00Z".into(),
+            edited_timestamp: None,
+            referenced_message: None,
+            reactions: Vec::new(),
             embeds: Vec::new(),
             attachments: Vec::new(),
         }

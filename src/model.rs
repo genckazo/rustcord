@@ -57,6 +57,99 @@ impl Channel {
         matches!(self.kind, 0 | 1 | 3 | 5)
     }
 }
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ReferencedMessage {
+    #[serde(default)]
+    pub author: User,
+    #[serde(default)]
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct Emoji {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+impl Emoji {
+    pub fn unicode(symbol: &str) -> Self {
+        Self {
+            id: None,
+            name: Some(symbol.to_owned()),
+        }
+    }
+    pub fn label(&self) -> String {
+        match (&self.id, self.name.as_deref()) {
+            (Some(_), Some(name)) if !name.is_empty() => format!(":{name}:"),
+            (_, Some(name)) if !name.is_empty() => unicode_emoji_label(name),
+            _ => "?".to_owned(),
+        }
+    }
+    pub fn api_key(&self) -> Result<String, String> {
+        let name = self
+            .name
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| "Missing emoji name".to_owned())?;
+        if let Some(id) = self.id.as_deref().filter(|id| !id.is_empty()) {
+            if !id.bytes().all(|b| b.is_ascii_digit())
+                || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            {
+                return Err("Invalid custom emoji".into());
+            }
+            return Ok(format!("{name}:{id}"));
+        }
+        if name
+            .bytes()
+            .any(|b| b < 0x20 || matches!(b, b'/' | b'?' | b'#' | b'\\'))
+        {
+            return Err("Invalid emoji".into());
+        }
+        let mut out = String::with_capacity(name.len() * 3);
+        for b in name.as_bytes() {
+            use std::fmt::Write;
+            let _ = write!(out, "%{b:02X}");
+        }
+        Ok(out)
+    }
+    pub fn same_as(&self, other: &Emoji) -> bool {
+        match (&self.id, &other.id) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => self.name == other.name,
+            _ => false,
+        }
+    }
+}
+
+fn unicode_emoji_label(symbol: &str) -> String {
+    match symbol {
+        "👍" => "+1".to_owned(),
+        "👎" => "-1".to_owned(),
+        "❤️" | "❤" => "♥".to_owned(),
+        "🔥" => ":fire:".to_owned(),
+        "😂" => ":joy:".to_owned(),
+        "🎉" => ":tada:".to_owned(),
+        "👀" => ":eyes:".to_owned(),
+        "✅" => "✓".to_owned(),
+        "❌" => "✕".to_owned(),
+        "⭐" => "★".to_owned(),
+        "🚀" => ":rocket:".to_owned(),
+        "💯" => ":100:".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Reaction {
+    #[serde(default)]
+    pub count: u32,
+    #[serde(default)]
+    pub me: bool,
+    #[serde(default)]
+    pub emoji: Emoji,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct Message {
     pub id: String,
@@ -65,6 +158,12 @@ pub struct Message {
     #[serde(default)]
     pub content: String,
     pub timestamp: String,
+    #[serde(default)]
+    pub edited_timestamp: Option<String>,
+    #[serde(default)]
+    pub referenced_message: Option<Box<ReferencedMessage>>,
+    #[serde(default)]
+    pub reactions: Vec<Reaction>,
     #[serde(default)]
     pub embeds: Vec<Embed>,
     #[serde(default)]
